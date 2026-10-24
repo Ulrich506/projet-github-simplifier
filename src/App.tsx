@@ -727,7 +727,27 @@ export default function App() {
                     <p className="mb-4 text-sm text-slate-400">{t.syncStep.firstPublishDesc}</p>
                     <div className="flex flex-wrap items-center gap-3">
                       <input value={repoName} onChange={(event) => setRepoName(event.target.value)} placeholder={t.syncStep.repoNamePlaceholder} className="rounded-md border border-slate-700 bg-[#090909] px-3 py-2 text-sm" />
-                      <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={privateRepo} onChange={(event) => setPrivateRepo(event.target.checked)} />{t.syncStep.privateRepoCheckbox}</label>
+                      {/* Sélecteur Privé / Public */}
+                      <div className="flex rounded-md border border-slate-700 text-sm overflow-hidden" role="group" aria-label={lang === "fr" ? "Visibilité du dépôt" : "Repository visibility"}>
+                        <button
+                          type="button"
+                          id="visibility-private"
+                          onClick={() => setPrivateRepo(true)}
+                          className={`flex items-center gap-1.5 px-3 py-2 transition-colors ${privateRepo ? "bg-orange-600 text-white font-semibold" : "bg-[#090909] text-slate-400 hover:text-slate-200"}`}
+                          aria-pressed={privateRepo}
+                        >
+                          🔒 {t.syncStep.privateRepoCheckbox}
+                        </button>
+                        <button
+                          type="button"
+                          id="visibility-public"
+                          onClick={() => setPrivateRepo(false)}
+                          className={`flex items-center gap-1.5 px-3 py-2 border-l border-slate-700 transition-colors ${!privateRepo ? "bg-emerald-700 text-white font-semibold" : "bg-[#090909] text-slate-400 hover:text-slate-200"}`}
+                          aria-pressed={!privateRepo}
+                        >
+                          🌐 {t.syncStep.publicRepoLabel}
+                        </button>
+                      </div>
                       <button type="button" onClick={() => void createAndPublish()} disabled={busy || !auth.token} className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40">
                         <CloudUpload size={15} className="mr-1 inline" />{t.syncStep.createAndPublishBtn}
                       </button>

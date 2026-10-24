@@ -26,6 +26,25 @@ export interface DivergenceDepot {
   truncated: boolean;
 }
 
+/**
+ * Retourne les paramètres d'authentification GitHub corrects pour isomorphic-git.
+ * GitHub Git HTTP requiert le token dans le champ password (avec username="x-access-token").
+ * Sans ça, calculateBasicAuthHeader produit `Basic base64("<token>:")` — invalide → 403.
+ * L'en-tête Authorization:Bearer est ajouté en priorité sur le Basic Auth.
+ * L'en-tête User-Agent est obligatoire : GitHub WAF bloque sans lui avec HTTP 403.
+ */
+function authGitHub(token: string) {
+  const t = token.trim();
+  return {
+    username: "x-access-token",
+    password: t,
+    headers: {
+      Authorization: `Bearer ${t}`,
+      "User-Agent": "GitHub-Simplifie/1.0",
+    },
+  };
+}
+
 const DOSSIERS_GENERES = new Set([
   "node_modules", "dist", "target", "build", ".next", ".cache", "coverage",
   ".venv", "venv", "vendor", ".godot", ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
@@ -208,7 +227,8 @@ export async function obtenirDivergenceDepot(dir: string, token: string): Promis
     serverRefs = await git.listServerRefs({
       http,
       url: remoteUrl,
-      onAuth: () => ({ username: token }),
+      onAuth: () => authGitHub(token),
+      headers: { "User-Agent": "GitHub-Simplifie/1.0" },
     });
   } catch {
     // En cas d'échec du listServerRefs, on continue avec git.fetch
@@ -232,7 +252,8 @@ export async function obtenirDivergenceDepot(dir: string, token: string): Promis
       remote: "origin",
       ref: branch,
       singleBranch: true,
-      onAuth: () => ({ username: token }),
+      onAuth: () => authGitHub(token),
+      headers: { "User-Agent": "GitHub-Simplifie/1.0" },
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -434,7 +455,9 @@ export async function publier({
     dir,
     remote: "origin",
     ref: await obtenirBrancheCourante(dir),
-    onAuth: () => ({ username: token }),
+    onAuth: () => authGitHub(token),
+    onAuthFailure: () => ({ cancel: true }),
+    headers: { "User-Agent": "GitHub-Simplifie/1.0" },
     onProgress: (evt) => onProgress?.(evt as ProgressionGit),
   });
 }
@@ -488,7 +511,8 @@ export async function recupererMisesAJour({
     serverRefs = await git.listServerRefs({
       http,
       url: remoteUrl,
-      onAuth: () => ({ username: token }),
+      onAuth: () => authGitHub(token),
+      headers: { "User-Agent": "GitHub-Simplifie/1.0" },
     });
   } catch {
     // Si la commande échoue, tenter le pull direct
@@ -509,7 +533,9 @@ export async function recupererMisesAJour({
       fastForwardOnly: true,
       author: identity,
       committer: identity,
-      onAuth: () => ({ username: token }),
+      onAuth: () => authGitHub(token),
+      onAuthFailure: () => ({ cancel: true }),
+      headers: { "User-Agent": "GitHub-Simplifie/1.0" },
       onProgress: (evt) => onProgress?.(evt as ProgressionGit),
     });
   } catch (err) {
@@ -541,7 +567,9 @@ export async function recuperer({
     http,
     dir,
     url: remoteUrl ?? "",
-    onAuth: () => ({ username: token }),
+    onAuth: () => authGitHub(token),
+    onAuthFailure: () => ({ cancel: true }),
+    headers: { "User-Agent": "GitHub-Simplifie/1.0" },
     onProgress: (evt) => onProgress?.(evt as ProgressionGit),
   });
 }

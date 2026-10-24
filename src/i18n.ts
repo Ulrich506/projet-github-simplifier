@@ -74,6 +74,7 @@ export interface Translations {
     firstPublishDesc: string;
     repoNamePlaceholder: string;
     privateRepoCheckbox: string;
+    publicRepoLabel: string;
     createAndPublishBtn: string;
     branchLabel: string;
     refreshBtn: string;
@@ -212,7 +213,8 @@ export const translations: Record<Language, Translations> = {
       firstPublishTitle: "Publier ce projet pour la première fois",
       firstPublishDesc: "Un dépôt privé sera créé par défaut sur GitHub. Les fichiers sensibles encore suivis bloquent la publication.",
       repoNamePlaceholder: "nom-du-depot",
-      privateRepoCheckbox: "Dépôt privé",
+      privateRepoCheckbox: "Privé",
+      publicRepoLabel: "Public",
       createAndPublishBtn: "Créer & publier",
       branchLabel: "Branche :",
       refreshBtn: "Actualiser",
@@ -349,7 +351,8 @@ export const translations: Record<Language, Translations> = {
       firstPublishTitle: "Publish this project for the first time",
       firstPublishDesc: "A private repository will be created on GitHub by default. Any tracked sensitive files will block publishing.",
       repoNamePlaceholder: "repository-name",
-      privateRepoCheckbox: "Private repository",
+      privateRepoCheckbox: "Private",
+      publicRepoLabel: "Public",
       createAndPublishBtn: "Create & Publish",
       branchLabel: "Branch:",
       refreshBtn: "Refresh",
@@ -522,6 +525,19 @@ export function translateError(error: unknown, lang: Language): string {
     return lang === "fr"
       ? rawMessage
       : rawMessage.replace("existe déjà", "already exists on GitHub");
+  }
+
+  // 14b. HTTP 403 Forbidden (isomorphic-git HttpError wrapping GitHub's 403)
+  // Causes : User-Agent absent (WAF), mauvais format auth, branche protégée,
+  //          ou droits d'écriture insuffisants sur le dépôt.
+  if (/403|forbidden/i.test(rawMessage)) {
+    const details = (error as { data?: { response?: string } })?.data?.response;
+    const extra = details && details.trim() && !details.includes("<html")
+      ? ` — ${details.slice(0, 200).trim()}`
+      : "";
+    return lang === "fr"
+      ? `Accès refusé par GitHub (HTTP 403 Forbidden)${extra}. Vérifiez que vous avez bien les droits d'écriture sur ce dépôt, que la branche n'est pas protégée, ou déconnectez puis reconnectez votre compte GitHub.`
+      : `Access denied by GitHub (HTTP 403 Forbidden)${extra}. Verify you have write access to this repository, that the branch is not protected, or sign out and reconnect your GitHub account.`;
   }
 
   // 14. Network / offline error
