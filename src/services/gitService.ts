@@ -456,7 +456,6 @@ export async function publier({
     remote: "origin",
     ref: await obtenirBrancheCourante(dir),
     onAuth: () => authGitHub(token),
-    onAuthFailure: () => ({ cancel: true }),
     headers: { "User-Agent": "GitHub-Simplifie/1.0" },
     onProgress: (evt) => onProgress?.(evt as ProgressionGit),
   });
@@ -534,7 +533,6 @@ export async function recupererMisesAJour({
       author: identity,
       committer: identity,
       onAuth: () => authGitHub(token),
-      onAuthFailure: () => ({ cancel: true }),
       headers: { "User-Agent": "GitHub-Simplifie/1.0" },
       onProgress: (evt) => onProgress?.(evt as ProgressionGit),
     });
@@ -568,7 +566,6 @@ export async function recuperer({
     dir,
     url: remoteUrl ?? "",
     onAuth: () => authGitHub(token),
-    onAuthFailure: () => ({ cancel: true }),
     headers: { "User-Agent": "GitHub-Simplifie/1.0" },
     onProgress: (evt) => onProgress?.(evt as ProgressionGit),
   });
