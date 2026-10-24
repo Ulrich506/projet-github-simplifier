@@ -1,5 +1,7 @@
 #[tauri::command]
 fn charger_jeton_github() -> Result<Option<String>, String> {
+    // Keep the existing keyring service name so app identity changes do not log
+    // out users who already have a token stored in the system credential store.
     let entry = keyring::Entry::new("com.root.github-simplifie", "github-oauth-token")
         .map_err(|error| format!("Impossible d’ouvrir le trousseau sécurisé : {error}"))?;
     match entry.get_password() {

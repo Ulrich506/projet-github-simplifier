@@ -143,7 +143,7 @@ export interface Translations {
 export const translations: Record<Language, Translations> = {
   fr: {
     app: {
-      title: "GitHub Simplifié",
+      title: "Gsimplifié",
       subtitle: "Synchronisation de projets, sans ligne de commande",
       connectedAs: "connecté",
       connectGitHub: "Connecter GitHub",
@@ -281,7 +281,7 @@ export const translations: Record<Language, Translations> = {
   },
   en: {
     app: {
-      title: "GitHub Simplified",
+      title: "Gsimplifie",
       subtitle: "Project synchronization without the command line",
       connectedAs: "connected",
       connectGitHub: "Connect GitHub",

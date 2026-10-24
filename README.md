@@ -1,10 +1,37 @@
-# GitHub Simplifié
+# Gsimplifié
 
 Application desktop (Tauri + React + TypeScript) pour publier/gérer des
 projets GitHub sans connaître Git : connexion → glisser-déposer → choisir
 l'action → confirmer.
 
-## Lancer l’application
+## Installation
+
+Télécharge l’installeur correspondant à ton système depuis la page
+[Releases](https://github.com/Ulrich506/projet-github-simplifier/releases) :
+
+- **Linux** : paquet `.deb` ou image `.AppImage`.
+- **Windows** : installeur `.exe` (NSIS) ou `.msi`.
+- **macOS** : image `.dmg` lorsqu’elle est disponible.
+
+Les versions ne sont pas signées pour le moment. Windows SmartScreen peut
+afficher un avertissement; sur macOS, Gatekeeper peut demander une confirmation
+ou empêcher l’ouverture. N’installe que les fichiers provenant des Releases
+officielles de ce dépôt.
+
+Sur Ubuntu/Debian, installe un paquet téléchargé avec :
+
+```bash
+sudo apt install ./Gsimplifie_0.1.0_amd64.deb
+```
+
+Pour une AppImage, rends le fichier exécutable puis lance-le :
+
+```bash
+chmod +x Gsimplifie_0.1.0_amd64.AppImage
+./Gsimplifie_0.1.0_amd64.AppImage
+```
+
+## Développement
 
 ```bash
 npm install
@@ -16,8 +43,24 @@ npm run tauri dev
 « Port 1420 is already in use ». Pour l’interface seule dans le navigateur,
 utilise `npm run dev` à la place, pas en plus de Tauri.
 
-Si un ancien serveur bloque le port, arrête son terminal avec `Ctrl+C`, puis
-relance une seule fois `npm run tauri dev`.
+Le build local de production s’effectue avec :
+
+```bash
+npm run tauri build
+```
+
+## Publier une version
+
+Vérifie que la version dans `src-tauri/tauri.conf.json` est celle souhaitée,
+puis crée et pousse un tag. Le workflow GitHub Actions compile les installeurs
+Linux, Windows et macOS et les ajoute à une Release en brouillon :
+
+```bash
+git tag v0.1.0
+git push --tags
+```
+
+Après vérification des artefacts, publie la Release brouillon depuis GitHub.
 
 ## Structure
 

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "GitHub Simplifié",
+  "productName": "Gsimplifie",
   "version": "0.1.0",
-  "identifier": "com.root.github-simplifie",
+  "identifier": "com.ulrich.gsimplifie",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "GitHub Simplifié",
+        "title": "Gsimplifié",
         "width": 1100,
         "height": 760,
         "minWidth": 720,
@@ -21,12 +21,15 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline';"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Publiez et synchronisez vos projets GitHub sans ligne de commande.",
+    "longDescription": "Application de bureau multiplateforme pour publier, mettre à jour et cloner des projets GitHub.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
