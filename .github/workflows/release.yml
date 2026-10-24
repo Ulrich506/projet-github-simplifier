@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to release"
+        description: "Tag de la release à créer (ex. v0.1.0)"
         required: true
         default: "v0.1.0"
   push:
@@ -28,10 +28,19 @@ jobs:
             args: --bundles nsis,msi
 
     steps:
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag invalide : $RELEASE_TAG (format attendu : vX.Y.Z)"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
