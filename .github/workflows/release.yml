@@ -1,6 +1,12 @@
 name: Build and release installers
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release'
+        required: true
+        default: 'v0.1.0'
   push:
     tags:
       - "v*"
