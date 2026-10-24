@@ -90,3 +90,4 @@ Toutes les actions sont câblées et fonctionnelles :
 - Les commits locaux ignorent les dossiers de dépendances/compilation (`node_modules`, `target`, `dist`, etc.) et ne suivent pas les liens symboliques.
 - `tauriFsBridge.ts` reconstruit les codes d'erreur type `ENOENT` à partir des messages texte de `@tauri-apps/plugin-fs` (qui n'a pas d'objets d'erreur avec `.code` comme Node.js) — isomorphic-git en dépend pour son fonctionnement interne ; c'est un pont pragmatique, pas exhaustif (les liens symboliques par exemple ne sont pas finement gérés)
 - `strict: true` est activé dans `tsconfig.json` — garde-le
+# projet-github-simplifier

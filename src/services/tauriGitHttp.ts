@@ -66,3 +66,31 @@ export const tauriGitHttp = {
     };
   },
 };
+
+export function creerHttpGitHub(token: string) {
+  const accessToken = token.trim();
+  if (!accessToken) {
+    throw new Error("Connecte-toi à GitHub avant d’effectuer cette opération.");
+  }
+
+  // GitHub may return 403 for an unauthenticated private-repository request,
+  // before isomorphic-git's onAuth callback can provide credentials.
+  const authorization = `Basic ${btoa(`x-access-token:${accessToken}`)}`;
+
+  return {
+    request(request: RequeteGit) {
+      const parsedUrl = new URL(request.url);
+      if (parsedUrl.protocol !== "https:" || parsedUrl.hostname.toLowerCase() !== "github.com") {
+        throw new Error("L’authentification Git est limitée aux requêtes HTTPS vers github.com.");
+      }
+
+      const headers = { ...request.headers };
+      const hasAuthorization = Object.keys(headers).some(
+        (name) => name.toLowerCase() === "authorization"
+      );
+      if (!hasAuthorization) headers.Authorization = authorization;
+
+      return tauriGitHttp.request({ ...request, headers });
+    },
+  };
+}

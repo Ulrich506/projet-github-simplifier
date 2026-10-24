@@ -1,6 +1,6 @@
 import git from "isomorphic-git";
 import { join } from "@tauri-apps/api/path";
-import { tauriGitHttp as http } from "./tauriGitHttp";
+import { creerHttpGitHub } from "./tauriGitHttp";
 import { estLienSymbolique, tauriFsBridge as fs } from "./tauriFsBridge";
 import { isSensitivePath } from "./projectAnalyzer";
 import { listerCheminsRelatifs } from "./fileSystemUtils";
@@ -42,6 +42,7 @@ function authGitHub(token: string) {
     },
   };
 }
+
 const DOSSIERS_GENERES = new Set([
   "node_modules", "dist", "target", "build", ".next", ".cache", "coverage",
   ".venv", "venv", "vendor", ".godot", ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
@@ -217,6 +218,7 @@ export async function obtenirDivergenceDepot(dir: string, token: string): Promis
   }
 
   const hasLocalCommit = await contientCommit(dir);
+  const http = creerHttpGitHub(token);
 
   // Vérifier si le dépôt distant possède des références
   let serverRefs: { ref: string; oid: string }[] = [];
@@ -434,6 +436,7 @@ export async function publier({
   onProgress,
 }: OperationDistante): Promise<void> {
   if (!token.trim()) throw new Error("Connecte-toi à GitHub avant de publier.");
+  const http = creerHttpGitHub(token);
   await verifierAucunFichierSensible(dir);
   const configuredRemote = await obtenirUrlDistante(dir);
   if (!configuredRemote) {
@@ -486,6 +489,7 @@ export async function recupererMisesAJour({
   onProgress,
 }: OperationDistante): Promise<void> {
   if (!token.trim()) throw new Error("Connecte-toi à GitHub avant de synchroniser.");
+  const http = creerHttpGitHub(token);
   const branch = await obtenirBrancheCourante(dir);
   const remoteUrl = await obtenirUrlDistante(dir);
   if (!remoteUrl || !validateGitHubRemote(remoteUrl)) {
@@ -549,6 +553,7 @@ export async function recuperer({
   onProgress,
 }: OperationDistante): Promise<void> {
   if (!token.trim()) throw new Error("Connecte-toi à GitHub avant de cloner.");
+  const http = creerHttpGitHub(token);
   if (!validateGitHubRemote(remoteUrl ?? "")) {
     throw new Error("L’URL du dépôt à cloner doit être une URL HTTPS GitHub valide.");
   }
