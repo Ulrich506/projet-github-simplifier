@@ -30,7 +30,6 @@ export interface DivergenceDepot {
  * Retourne les paramètres d'authentification GitHub corrects pour isomorphic-git.
  * GitHub Git HTTP requiert le token dans le champ password (avec username="x-access-token").
  * Sans ça, calculateBasicAuthHeader produit `Basic base64("<token>:")` — invalide → 403.
- * L'en-tête Authorization:Bearer est ajouté en priorité sur le Basic Auth.
  * L'en-tête User-Agent est obligatoire : GitHub WAF bloque sans lui avec HTTP 403.
  */
 function authGitHub(token: string) {
@@ -39,12 +38,10 @@ function authGitHub(token: string) {
     username: "x-access-token",
     password: t,
     headers: {
-      Authorization: `Bearer ${t}`,
       "User-Agent": "GitHub-Simplifie/1.0",
     },
   };
 }
-
 const DOSSIERS_GENERES = new Set([
   "node_modules", "dist", "target", "build", ".next", ".cache", "coverage",
   ".venv", "venv", "vendor", ".godot", ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",

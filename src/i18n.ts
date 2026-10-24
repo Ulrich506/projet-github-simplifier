@@ -540,6 +540,13 @@ export function translateError(error: unknown, lang: Language): string {
       : `Access denied by GitHub (HTTP 403 Forbidden)${extra}. Verify you have write access to this repository, that the branch is not protected, or sign out and reconnect your GitHub account.`;
   }
 
+  // 14c. User canceled / aborted auth flow
+  if (/usercanceled|the operation was canceled|cancelled|canceled/i.test(rawMessage)) {
+    return lang === "fr"
+      ? "La connexion GitHub a été annulée ou interrompue. Reprenez l’authentification et confirmez l’ouverture dans votre navigateur."
+      : "The GitHub sign-in flow was canceled or interrupted. Retry the authentication and confirm the browser flow before continuing.";
+  }
+
   // 14. Network / offline error
   if (/failed to fetch|network error|cannot contact|dns|timeout/i.test(rawMessage)) {
     return lang === "fr"
