@@ -200,32 +200,77 @@ export async function obtenirDivergenceDepot(dir: string, token: string): Promis
     throw new Error("Associe un dépôt distant HTTPS GitHub valide avant de vérifier la synchronisation.");
   }
 
-  await git.fetch({
-    fs,
-    http,
-    dir,
-    remote: "origin",
-    ref: branch,
-    singleBranch: true,
-    onAuth: () => ({ username: token }),
-  });
+  const hasLocalCommit = await contientCommit(dir);
+
+  // Vérifier si le dépôt distant possède des références
+  let serverRefs: { ref: string; oid: string }[] = [];
+  try {
+    serverRefs = await git.listServerRefs({
+      http,
+      url: remoteUrl,
+      onAuth: () => ({ username: token }),
+    });
+  } catch {
+    // En cas d'échec du listServerRefs, on continue avec git.fetch
+  }
+
+  if (serverRefs.length === 0) {
+    if (!hasLocalCommit) return { ahead: 0, behind: 0, truncated: false };
+    const localHistory = await git.log({ fs, dir, depth: 100 }).catch(() => []);
+    return { ahead: localHistory.length, behind: 0, truncated: false };
+  }
+
+  if (!hasLocalCommit) {
+    return { ahead: 0, behind: serverRefs.length > 0 ? 1 : 0, truncated: false };
+  }
+
+  try {
+    await git.fetch({
+      fs,
+      http,
+      dir,
+      remote: "origin",
+      ref: branch,
+      singleBranch: true,
+      onAuth: () => ({ username: token }),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/ref\.length|null is not an object|cannot read properties of null/i.test(msg)) {
+      return { ahead: 0, behind: 0, truncated: false };
+    }
+  }
 
   const remoteRef = `refs/remotes/origin/${branch}`;
-  const [localOid, remoteOid] = await Promise.all([
-    git.resolveRef({ fs, dir, ref: `refs/heads/${branch}` }),
-    git.resolveRef({ fs, dir, ref: remoteRef }),
-  ]);
-  if (localOid === remoteOid) return { ahead: 0, behind: 0, truncated: false };
+  let localOid: string | null = null;
+  let remoteOid: string | null = null;
 
-  const mergeBases = await git.findMergeBase({ fs, dir, oids: [localOid, remoteOid] });
+  try {
+    localOid = await git.resolveRef({ fs, dir, ref: `refs/heads/${branch}` });
+  } catch {
+    return { ahead: 0, behind: 0, truncated: false };
+  }
+
+  try {
+    remoteOid = await git.resolveRef({ fs, dir, ref: remoteRef });
+  } catch {
+    const localHistory = await git.log({ fs, dir, depth: 100 }).catch(() => []);
+    return { ahead: localHistory.length, behind: 0, truncated: false };
+  }
+
+  if (!localOid || !remoteOid || localOid === remoteOid) {
+    return { ahead: 0, behind: 0, truncated: false };
+  }
+
+  const mergeBases = await git.findMergeBase({ fs, dir, oids: [localOid, remoteOid] }).catch(() => []);
   const mergeBase = mergeBases[0];
   if (typeof mergeBase !== "string" || !mergeBase) {
     return { ahead: 0, behind: 0, truncated: false };
   }
 
   const [localHistory, remoteHistory] = await Promise.all([
-    git.log({ fs, dir, ref: localOid, depth: 1000 }),
-    git.log({ fs, dir, ref: remoteOid, depth: 1000 }),
+    git.log({ fs, dir, ref: localOid, depth: 1000 }).catch(() => []),
+    git.log({ fs, dir, ref: remoteOid, depth: 1000 }).catch(() => []),
   ]);
   const localBaseIndex = localHistory.findIndex(({ oid }) => oid === mergeBase);
   const remoteBaseIndex = remoteHistory.findIndex(({ oid }) => oid === mergeBase);
@@ -403,7 +448,16 @@ export async function mettreAJour({
   token,
   onProgress,
 }: OperationDistante): Promise<void> {
-  await recupererMisesAJour({ dir, token, onProgress });
+  try {
+    await recupererMisesAJour({ dir, token, onProgress });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg === "EMPTY_REMOTE" || /ref\.length|null is not an object|cannot read properties of null/i.test(msg)) {
+      // Le dépôt distant est neuf ou vide : rien à récupérer, on publie directement les fichiers locaux
+    } else {
+      throw error;
+    }
+  }
   await publier({ dir, token, onProgress });
 }
 
@@ -428,19 +482,43 @@ export async function recupererMisesAJour({
     throw new Error("Des modifications locales ne sont pas enregistrées. Enregistre-les avant la synchronisation.");
   }
 
-  await git.pull({
-    fs,
-    http,
-    dir,
-    ref: branch,
-    remote: "origin",
-    singleBranch: true,
-    fastForwardOnly: true,
-    author: identity,
-    committer: identity,
-    onAuth: () => ({ username: token }),
-    onProgress: (evt) => onProgress?.(evt as ProgressionGit),
-  });
+  // Vérifier si le serveur distant possède des commits/références
+  let serverRefs: { ref: string; oid: string }[] = [];
+  try {
+    serverRefs = await git.listServerRefs({
+      http,
+      url: remoteUrl,
+      onAuth: () => ({ username: token }),
+    });
+  } catch {
+    // Si la commande échoue, tenter le pull direct
+  }
+
+  if (serverRefs.length === 0) {
+    throw new Error("EMPTY_REMOTE");
+  }
+
+  try {
+    await git.pull({
+      fs,
+      http,
+      dir,
+      ref: branch,
+      remote: "origin",
+      singleBranch: true,
+      fastForwardOnly: true,
+      author: identity,
+      committer: identity,
+      onAuth: () => ({ username: token }),
+      onProgress: (evt) => onProgress?.(evt as ProgressionGit),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/ref\.length|null is not an object|cannot read properties of null/i.test(msg)) {
+      throw new Error("EMPTY_REMOTE");
+    }
+    throw err;
+  }
 }
 
 export async function recuperer({

@@ -12,6 +12,7 @@ import {
   FolderGit2,
   GitBranch,
   GitFork,
+  Languages,
   LoaderCircle,
   LogOut,
   RefreshCw,
@@ -46,13 +47,13 @@ import {
 } from "./services/gitService";
 import { creerOuRecupererDepot, verifierPublication } from "./services/githubService";
 import type { AnalyseProjet } from "./types";
-
-const ETAPES = [
-  { id: 1, label: "Projet", icon: FolderGit2 },
-  { id: 2, label: "Fichiers sensibles", icon: ShieldAlert },
-  { id: 3, label: "Tableau de bord Sync", icon: RefreshCw },
-  { id: 4, label: "Cloner un dépôt", icon: GitFork },
-] as const;
+import {
+  getInitialLanguage,
+  saveLanguage,
+  translations,
+  translateError,
+  type Language,
+} from "./i18n";
 
 function repoNameFromUrl(url: string): string {
   return url.trim().replace(/\/+$/, "").split("/").pop()?.replace(/\.git$/i, "") ?? "";
@@ -62,15 +63,10 @@ function isGitHubUrl(url: string): boolean {
   return /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?\/?$/i.test(url.trim());
 }
 
-function displayError(error: unknown): string {
-  if (!(error instanceof Error)) return "Une erreur inattendue est survenue.";
-  if (/could not find head/i.test(error.message)) {
-    return "Ce dépôt ne contient encore aucun commit. Publie d’abord le projet ou vérifie la branche configurée sur GitHub.";
-  }
-  return error.message;
-}
-
 export default function App() {
+  const [lang, setLang] = useState<Language>(getInitialLanguage);
+  const t = translations[lang];
+
   const auth = useGitHubAuth();
   const [step, setStep] = useState(1);
   const [directory, setDirectory] = useState<string | null>(null);
@@ -81,7 +77,7 @@ export default function App() {
   const [replaceRemoteConfirmed, setReplaceRemoteConfirmed] = useState(false);
   const [repoName, setRepoName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(true);
-  const [commitMessage, setCommitMessage] = useState("Mise à jour du projet");
+  const [commitMessage, setCommitMessage] = useState(t.syncStep.commitMsgPlaceholder);
   const [divergence, setDivergence] = useState<DivergenceDepot | null>(null);
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneParent, setCloneParent] = useState("");
@@ -90,6 +86,27 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [securityNoteVisible, setSecurityNoteVisible] = useState(true);
   const selectionEnCours = useRef(false);
+
+  // Sync commit message default when language changes if untouched
+  useEffect(() => {
+    setCommitMessage((prev) =>
+      prev === "Mise à jour du projet" || prev === "Project update" || prev === "Commit message" || prev === "Message du commit"
+        ? t.syncStep.commitMsgPlaceholder
+        : prev
+    );
+  }, [lang, t.syncStep.commitMsgPlaceholder]);
+
+  const displayError = useCallback((err: unknown): string => {
+    return translateError(err, lang);
+  }, [lang]);
+
+  const toggleLanguage = useCallback(() => {
+    setLang((prev) => {
+      const next = prev === "fr" ? "en" : "fr";
+      saveLanguage(next);
+      return next;
+    });
+  }, []);
 
   const cloneName = useMemo(() => repoNameFromUrl(cloneUrl), [cloneUrl]);
   const cloneTarget = useMemo(
@@ -110,7 +127,9 @@ export default function App() {
     setDivergence(null);
     try {
       const paths = await listerCheminsRelatifs(path);
-      if (paths.length === 0) throw new Error("Aucun fichier n’a été trouvé dans ce dossier.");
+      if (paths.length === 0) {
+        throw new Error(lang === "fr" ? "Aucun fichier n’a été trouvé dans ce dossier." : "No files were found in this directory.");
+      }
       const result = await analyzeProject(paths);
       const rootIsGit = result.hasExistingGit;
       let remoteUrl: string | null = null;
@@ -136,7 +155,7 @@ export default function App() {
       selectionEnCours.current = false;
       setBusy(false);
     }
-  }, [busy]);
+  }, [busy, displayError, lang]);
 
   async function refreshProjectState() {
     if (!directory) return;
@@ -161,12 +180,20 @@ export default function App() {
   async function associateRemote() {
     if (!directory) return;
     if (!isGitHubUrl(remoteInput)) {
-      setError("Entre une URL HTTPS GitHub valide, par exemple https://github.com/compte/projet.git.");
+      setError(
+        lang === "fr"
+          ? "Entre une URL HTTPS GitHub valide, par exemple https://github.com/compte/projet.git."
+          : "Enter a valid GitHub HTTPS URL, for example https://github.com/account/project.git."
+      );
       return;
     }
     if (repoState?.remoteUrl && repoState.remoteUrl !== remoteInput.trim() && !replaceRemoteConfirmed) {
       setReplaceRemoteConfirmed(true);
-      setError("Cette action remplacera l’URL du dépôt distant actuel. Clique à nouveau pour confirmer.");
+      setError(
+        lang === "fr"
+          ? "Cette action remplacera l’URL du dépôt distant actuel. Clique à nouveau pour confirmer."
+          : "This action will replace the current remote repository URL. Click again to confirm."
+      );
       return;
     }
     setBusy(true);
@@ -179,7 +206,11 @@ export default function App() {
         remplacerRemote: Boolean(repoState?.remoteUrl),
       });
       await refreshProjectState();
-      setNotice("Le dépôt distant est associé à ce dossier.");
+      setNotice(
+        lang === "fr"
+          ? "Le dépôt distant est associé à ce dossier."
+          : "Remote repository successfully linked to this folder."
+      );
       setReplaceRemoteConfirmed(false);
     } catch (cause) {
       setError(displayError(cause));
@@ -204,8 +235,10 @@ export default function App() {
       setTrackedSensitive(tracked);
       setNotice(
         tracked.includes(filepath)
-          ? `Impossible de retirer ${filepath} de l’index Git.`
-          : `${filepath} est exclu des prochains commits. Son historique Git existant n’est pas effacé.`
+          ? (lang === "fr" ? `Impossible de retirer ${filepath} de l’index Git.` : `Could not remove ${filepath} from Git index.`)
+          : (lang === "fr"
+              ? `${filepath} est exclu des prochains commits. Son historique Git existant n’est pas effacé.`
+              : `${filepath} is excluded from future commits. Existing Git history remains intact.`)
       );
     } catch (cause) {
       setError(displayError(cause));
@@ -242,7 +275,11 @@ export default function App() {
       setTrackedSensitive(sensitive);
       setRemoteInput(state.remoteUrl ?? "");
       setDivergence(null);
-      setNotice("Les commits disponibles sur GitHub ont été récupérés. Aucun changement local n’a été publié.");
+      setNotice(
+        lang === "fr"
+          ? "Les commits disponibles sur GitHub ont été récupérés. Aucun changement local n’a été publié."
+          : "Available commits from GitHub downloaded. No local changes were pushed."
+      );
     } catch (cause) {
       setError(displayError(cause));
     } finally {
@@ -259,21 +296,31 @@ export default function App() {
       const currentSensitive = await obtenirFichiersSensiblesAffectes(directory);
       if (currentSensitive.length) {
         throw new Error(
-          `Publication bloquée : ces fichiers sensibles sont encore suivis par Git : ${currentSensitive.join(", ")}.`
+          lang === "fr"
+            ? `Publication bloquée : ces fichiers sensibles sont encore suivis par Git : ${currentSensitive.join(", ")}.`
+            : `Publishing blocked: these sensitive files are still tracked by Git: ${currentSensitive.join(", ")}.`
         );
       }
       if (!repoState?.remoteUrl) {
-        throw new Error("Associe d’abord un dépôt GitHub à ce projet.");
+        throw new Error(
+          lang === "fr"
+            ? "Associe d’abord un dépôt GitHub à ce projet."
+            : "Please link a GitHub repository to this project first."
+        );
       }
       if (repoState.changedFiles > 0) {
-        await ajouterEtCommiter(directory, commitMessage.trim() || "Mise à jour du projet", {
-          name: auth.login ?? "Utilisateur GitHub",
-          email: `${auth.login ?? "utilisateur"}@users.noreply.github.com`,
+        await ajouterEtCommiter(directory, commitMessage.trim() || (lang === "fr" ? "Mise à jour du projet" : "Project update"), {
+          name: auth.login ?? "GitHub User",
+          email: `${auth.login ?? "user"}@users.noreply.github.com`,
         });
       }
       await mettreAJour({ dir: directory, token: auth.token });
       await refreshProjectState();
-      setNotice("Synchronisation terminée sans forcer l’historique distant.");
+      setNotice(
+        lang === "fr"
+          ? "Synchronisation terminée sans forcer l’historique distant."
+          : "Sync completed without forcing remote history."
+      );
     } catch (cause) {
       setError(displayError(cause));
     } finally {
@@ -284,11 +331,15 @@ export default function App() {
   async function createAndPublish() {
     if (!directory || !auth.token) return;
     if (repoState?.remoteUrl) {
-      setError("Un dépôt distant est déjà associé. Utilise « Publier le projet » ou confirme son remplacement dans l’étape d’association.");
+      setError(
+        lang === "fr"
+          ? "Un dépôt distant est déjà associé. Utilise « Publier mes modifications » ou confirme son remplacement dans l’étape d’association."
+          : "A remote repository is already linked. Use 'Publish My Changes' or replace it in Step 1."
+      );
       return;
     }
     if (!repoName.trim()) {
-      setError("Indique un nom de dépôt.");
+      setError(lang === "fr" ? "Indique un nom de dépôt." : "Please provide a repository name.");
       return;
     }
     setBusy(true);
@@ -296,7 +347,11 @@ export default function App() {
     try {
       const secrets = await obtenirFichiersSensiblesAffectes(directory);
       if (secrets.length) {
-        throw new Error(`Publication bloquée : fichiers sensibles encore suivis : ${secrets.join(", ")}.`);
+        throw new Error(
+          lang === "fr"
+            ? `Publication bloquée : fichiers sensibles encore suivis : ${secrets.join(", ")}.`
+            : `Publishing blocked: sensitive files still tracked: ${secrets.join(", ")}.`
+        );
       }
       if (!analysis?.hasExistingGit) await initialiserDepot(directory);
       await preparerGitignore(directory, analysis?.suggestedGitignore ?? "");
@@ -305,15 +360,19 @@ export default function App() {
         prive: privateRepo,
       });
       await associerDepotDistant(directory, remote.clone_url);
-      await ajouterEtCommiter(directory, "Publication initiale", {
-        name: auth.login ?? "Utilisateur GitHub",
-        email: `${auth.login ?? "utilisateur"}@users.noreply.github.com`,
+      await ajouterEtCommiter(directory, lang === "fr" ? "Publication initiale" : "Initial commit", {
+        name: auth.login ?? "GitHub User",
+        email: `${auth.login ?? "user"}@users.noreply.github.com`,
       });
       await publier({ dir: directory, token: auth.token });
       const branch = await obtenirBrancheCourante(directory);
       await verifierPublication(auth.token, remote.owner.login, remote.name, branch);
       await refreshProjectState();
-      setNotice(`Dépôt publié avec succès : ${remote.html_url}`);
+      setNotice(
+        lang === "fr"
+          ? `Dépôt publié avec succès : ${remote.html_url}`
+          : `Repository published successfully: ${remote.html_url}`
+      );
     } catch (cause) {
       setError(displayError(cause));
     } finally {
@@ -332,11 +391,19 @@ export default function App() {
 
   async function cloneRepository() {
     if (!auth.token) {
-      setError("Connecte-toi à GitHub pour cloner un dépôt privé ou public.");
+      setError(
+        lang === "fr"
+          ? "Connecte-toi à GitHub pour cloner un dépôt privé ou public."
+          : "Sign in to GitHub to clone private or public repositories."
+      );
       return;
     }
     if (!isGitHubUrl(cloneUrl) || !cloneName || !cloneParent) {
-      setError("Renseigne une URL GitHub valide et choisis un dossier parent.");
+      setError(
+        lang === "fr"
+          ? "Renseigne une URL GitHub valide et choisis un dossier parent."
+          : "Please provide a valid GitHub URL and select a parent folder."
+      );
       return;
     }
     setBusy(true);
@@ -345,7 +412,7 @@ export default function App() {
     try {
       const target = await join(cloneParent, cloneName);
       await recuperer({ dir: target, remoteUrl: cloneUrl.trim(), token: auth.token });
-      setNotice(`Dépôt cloné dans ${target}`);
+      setNotice(lang === "fr" ? `Dépôt cloné dans ${target}` : `Repository cloned into ${target}`);
       await selectProject(target);
       setStep(1);
     } catch (cause) {
@@ -355,6 +422,13 @@ export default function App() {
     }
   }
 
+  const stepsList = useMemo(() => [
+    { id: 1, label: t.steps.project, icon: FolderGit2 },
+    { id: 2, label: t.steps.sensitive, icon: ShieldAlert },
+    { id: 3, label: t.steps.sync, icon: RefreshCw },
+    { id: 4, label: t.steps.clone, icon: GitFork },
+  ], [t]);
+
   const activeStep = step === 4 ? 4 : step;
 
   return (
@@ -362,24 +436,35 @@ export default function App() {
       <header className="border-b border-slate-800 bg-[#111111]">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
           <div className="flex items-center gap-3">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-orange-600 font-bold">GS</span>
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-orange-600 font-bold text-white shadow-sm shadow-orange-600/30">GS</span>
             <div>
-              <p className="font-semibold">GitHub Simplifié</p>
-              <p className="text-xs text-slate-400">Synchronisation de projets, sans ligne de commande</p>
+              <p className="font-semibold text-white">{t.app.title}</p>
+              <p className="text-xs text-slate-400">{t.app.subtitle}</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {/* Language Switcher */}
+            <button
+              type="button"
+              onClick={toggleLanguage}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-[#171717] px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-orange-500 hover:text-white"
+              title={lang === "fr" ? "Switch to English" : "Passer en Français"}
+            >
+              <Languages size={14} className="text-orange-400" />
+              <span>{lang === "fr" ? "🇬🇧 EN" : "🇫🇷 FR"}</span>
+            </button>
+
             {auth.token ? (
               <>
                 <span className="rounded-full border border-emerald-800 bg-emerald-950/50 px-3 py-1 text-sm text-emerald-300">
-                  ● @{auth.login ?? "connecté"}
+                  ● @{auth.login ?? t.app.connectedAs}
                 </span>
                 <button
                   type="button"
                   onClick={auth.deconnecter}
                   className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white"
-                  aria-label="Se déconnecter"
-                  title="Se déconnecter"
+                  aria-label={t.app.disconnect}
+                  title={t.app.disconnect}
                 >
                   <LogOut size={17} />
                 </button>
@@ -389,9 +474,9 @@ export default function App() {
                 type="button"
                 onClick={auth.connecter}
                 disabled={auth.enAttente}
-                className="rounded-lg bg-orange-600 px-4 py-2 text-sm font-semibold hover:bg-orange-500 disabled:opacity-50"
+                className="rounded-lg bg-orange-600 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-500 disabled:opacity-50"
               >
-                {auth.enAttente ? "Connexion…" : "Connecter GitHub"}
+                {auth.enAttente ? t.app.connecting : t.app.connectGitHub}
               </button>
             )}
           </div>
@@ -408,6 +493,7 @@ export default function App() {
               enAttente={auth.enAttente}
               erreur={auth.erreur}
               onConnecter={auth.connecter}
+              lang={lang}
             />
           </div>
         </div>
@@ -415,7 +501,7 @@ export default function App() {
 
       <nav className="border-b border-slate-800 bg-[#111111]">
         <div className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-4">
-          {ETAPES.map(({ id, label, icon: Icon }) => (
+          {stepsList.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               type="button"
@@ -440,7 +526,7 @@ export default function App() {
             </button>
           ))}
           <div className="ml-auto hidden max-w-48 items-center truncate border-l border-slate-800 px-4 text-xs text-slate-400 lg:flex">
-            {directory ?? "Aucun projet sélectionné"}
+            {directory ?? t.app.noProject}
           </div>
         </div>
       </nav>
@@ -449,41 +535,41 @@ export default function App() {
         <div className="mb-6 flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-5">
           <div>
             <h1 className="flex items-center gap-3 text-2xl font-semibold">
-              {activeStep === 1 && <><FolderGit2 className="text-orange-400" />Choisir un projet</>}
-              {activeStep === 2 && <><ShieldAlert className="text-amber-400" />Contrôle de sécurité & fichiers sensibles</>}
-              {activeStep === 3 && <><RefreshCw className="text-emerald-400" />Tableau de bord de synchronisation</>}
-              {activeStep === 4 && <><GitFork className="text-orange-400" />Récupérer un dépôt (cloner)</>}
+              {activeStep === 1 && <><FolderGit2 className="text-orange-400" />{t.headers.step1Title}</>}
+              {activeStep === 2 && <><ShieldAlert className="text-amber-400" />{t.headers.step2Title}</>}
+              {activeStep === 3 && <><RefreshCw className="text-emerald-400" />{t.headers.step3Title}</>}
+              {activeStep === 4 && <><GitFork className="text-orange-400" />{t.headers.step4Title}</>}
             </h1>
             <p className="mt-1 text-sm text-slate-400">
-              {activeStep === 1 && "Choisissez le dossier local à analyser ou à synchroniser."}
-              {activeStep === 2 && "Examinez les fichiers suspects avant de les inclure dans un commit."}
-              {activeStep === 3 && "Vérifiez les changements puis synchronisez sans écraser l’historique distant."}
-              {activeStep === 4 && "Le dépôt est cloné dans un nouveau sous-dossier, sans écraser vos fichiers."}
+              {activeStep === 1 && t.headers.step1Desc}
+              {activeStep === 2 && t.headers.step2Desc}
+              {activeStep === 3 && t.headers.step3Desc}
+              {activeStep === 4 && t.headers.step4Desc}
             </p>
           </div>
           {directory && activeStep < 4 && (
             <span className="rounded-md border border-emerald-800 bg-emerald-950/40 px-3 py-1.5 text-xs text-emerald-300">
-              {repoState?.remoteUrl ? "Dépôt lié" : analysis?.hasExistingGit ? "Git détecté" : "Dossier sélectionné"}
+              {repoState?.remoteUrl ? t.headers.badgeLinked : analysis?.hasExistingGit ? t.headers.badgeGit : t.headers.badgeFolder}
             </span>
           )}
         </div>
 
         {auth.token && auth.erreur && (
           <div role="alert" className="mb-5 flex items-start justify-between gap-3 rounded-lg border border-amber-900 bg-amber-950/40 p-3 text-sm text-amber-100">
-            <span>{auth.erreur}</span>
-            <button type="button" onClick={auth.effacerErreur} aria-label="Fermer le message" className="shrink-0 text-amber-200 hover:text-white"><X size={17} /></button>
+            <span>{translateError(auth.erreur, lang)}</span>
+            <button type="button" onClick={auth.effacerErreur} aria-label={t.common.close} className="shrink-0 text-amber-200 hover:text-white"><X size={17} /></button>
           </div>
         )}
         {error && (
           <div role="alert" className="mb-5 flex items-start justify-between gap-3 rounded-lg border border-red-900 bg-red-950/40 p-3 text-sm text-red-200">
-            <span className="flex items-start gap-2"><AlertTriangle size={17} className="mt-0.5 shrink-0" />{error}</span>
-            <button type="button" onClick={() => setError(null)} aria-label="Fermer le message" className="shrink-0 text-red-200 hover:text-white"><X size={17} /></button>
+            <span className="flex items-start gap-2"><AlertTriangle size={17} className="mt-0.5 shrink-0" />{displayError(error)}</span>
+            <button type="button" onClick={() => setError(null)} aria-label={t.common.close} className="shrink-0 text-red-200 hover:text-white"><X size={17} /></button>
           </div>
         )}
         {notice && (
           <div role="status" className="mb-5 flex items-start justify-between gap-3 rounded-lg border border-emerald-900 bg-emerald-950/40 p-3 text-sm text-emerald-200">
             <span className="flex items-start gap-2"><Check size={17} className="mt-0.5 shrink-0" />{notice}</span>
-            <button type="button" onClick={() => setNotice(null)} aria-label="Fermer le message" className="shrink-0 text-emerald-200 hover:text-white"><X size={17} /></button>
+            <button type="button" onClick={() => setNotice(null)} aria-label={t.common.close} className="shrink-0 text-emerald-200 hover:text-white"><X size={17} /></button>
           </div>
         )}
 
@@ -495,26 +581,27 @@ export default function App() {
               disabled={busy}
               onFolderSelected={selectProject}
               onError={setError}
+              lang={lang}
             />
-            {busy && <Loading label="Analyse du dossier…" />}
+            {busy && <Loading label={t.common.analyzingFolder} />}
             {directory && analysis && (
               <div className="rounded-xl border border-slate-800 bg-[#171717] p-5">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
                   <div className="flex items-center gap-3">
                     <Folder size={22} className="text-slate-300" />
                     <div>
-                      <p className="text-xs text-slate-400">Dossier sélectionné</p>
+                      <p className="text-xs text-slate-400">{t.projectStep.selectedFolder}</p>
                       <p className="break-all font-mono text-sm">{directory}</p>
                     </div>
                   </div>
                   <span className="text-sm text-slate-400">
-                    {analysis.type} · {analysis.fileCount} fichiers
+                    {analysis.type} · {analysis.fileCount} {t.projectStep.filesCount}
                   </span>
                 </div>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div className="rounded-lg border border-slate-800 bg-[#0d0d0d] p-4">
                     <label htmlFor="remote-url" className="mb-2 block text-sm font-medium">
-                      Adresse du dépôt GitHub
+                      {t.projectStep.remoteUrlLabel}
                     </label>
                     <div className="flex gap-2">
                       <input
@@ -524,7 +611,7 @@ export default function App() {
                           setRemoteInput(event.target.value);
                           setReplaceRemoteConfirmed(false);
                         }}
-                        placeholder="https://github.com/compte/projet.git"
+                        placeholder={t.projectStep.remoteUrlPlaceholder}
                         className="min-w-0 flex-1 rounded-md border border-slate-700 bg-[#090909] px-3 py-2 font-mono text-xs outline-none focus:border-orange-500"
                       />
                       <button
@@ -533,24 +620,24 @@ export default function App() {
                         disabled={busy || !auth.token}
                         className="rounded-md bg-orange-600 px-3 py-2 text-xs font-semibold hover:bg-orange-500 disabled:opacity-40"
                       >
-                        {repoState?.remoteUrl ? "Mettre à jour l’adresse" : "Enregistrer l’adresse"}
+                        {repoState?.remoteUrl ? t.projectStep.updateRemoteBtn : t.projectStep.saveRemoteBtn}
                       </button>
                     </div>
                   </div>
                   <div className="rounded-lg border border-slate-800 bg-[#0d0d0d] p-4">
-                    <p className="mb-2 text-sm font-medium">Accès au dossier</p>
+                    <p className="mb-2 text-sm font-medium">{t.projectStep.folderAccess}</p>
                     <div className="flex items-center justify-between rounded-md border border-slate-800 bg-slate-900/70 px-3 py-2 text-sm">
-                      <span className="flex items-center gap-2 text-slate-300"><ShieldCheck size={16} className="text-emerald-400" />Accès accordé via sélection native</span>
-                      <span className="text-emerald-400">OK</span>
+                      <span className="flex items-center gap-2 text-slate-300"><ShieldCheck size={16} className="text-emerald-400" />{t.projectStep.folderAccessGranted}</span>
+                      <span className="text-emerald-400 font-medium">OK</span>
                     </div>
-                    <p className="mt-2 text-xs text-slate-500">L’accès est limité au dossier choisi. Le sélecteur natif fonctionne également hors du dossier personnel.</p>
+                    <p className="mt-2 text-xs text-slate-500">{t.projectStep.folderAccessDesc}</p>
                   </div>
                 </div>
                 <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/70 p-3 text-xs text-slate-300">
-                  <span className="font-semibold text-orange-300">Contrôle de racine Git :</span>{" "}
+                  <span className="font-semibold text-orange-300">{t.projectStep.gitRootTitle}</span>{" "}
                   {analysis.hasExistingGit
-                    ? "un dépôt Git est présent à la racine du dossier sélectionné."
-                    : "aucun dépôt Git à la racine; il sera initialisé uniquement lors d’une action de publication."}
+                    ? t.projectStep.gitRootPresent
+                    : t.projectStep.gitRootAbsent}
                 </div>
                 <div className="mt-4 flex justify-end">
                   <button
@@ -558,7 +645,7 @@ export default function App() {
                     onClick={() => { setStep(2); setError(null); setNotice(null); }}
                     className="inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-2.5 text-sm font-semibold hover:bg-orange-500"
                   >
-                    Examiner les fichiers & sécurité <ChevronRight size={16} />
+                    {t.projectStep.continueBtn} <ChevronRight size={16} />
                   </button>
                 </div>
               </div>
@@ -570,7 +657,7 @@ export default function App() {
           <section className="space-y-5">
             {!directory || !analysis ? (
               <div className="rounded-xl border border-dashed border-slate-700 bg-[#171717] p-6 text-center text-sm text-slate-300">
-                Choisis un dossier dans l’onglet « Projet » pour afficher les fichiers à contrôler.
+                {t.sensitiveStep.noProjectSelected}
               </div>
             ) : (
               <>
@@ -579,20 +666,20 @@ export default function App() {
                     <div className="flex gap-3">
                       <AlertTriangle size={19} className="mt-0.5 shrink-0" />
                       <div>
-                        <p className="font-semibold">Vérifie les fichiers avant publication</p>
-                        <p className="mt-1 text-sm text-amber-200/80">Le contrôle signale les noms de fichiers sensibles les plus courants; relis la liste avant de publier.</p>
+                        <p className="font-semibold">{t.sensitiveStep.warningTitle}</p>
+                        <p className="mt-1 text-sm text-amber-200/80">{t.sensitiveStep.warningDesc}</p>
                       </div>
                     </div>
-                    <button type="button" onClick={() => setSecurityNoteVisible(false)} aria-label="Masquer ce conseil" className="shrink-0 text-amber-200 hover:text-white"><X size={17} /></button>
+                    <button type="button" onClick={() => setSecurityNoteVisible(false)} aria-label={t.common.dismiss} className="shrink-0 text-amber-200 hover:text-white"><X size={17} /></button>
                   </div>
                 )}
                 <div className="overflow-hidden rounded-xl border border-slate-800 bg-[#171717]">
                   <div className="grid grid-cols-[1fr_auto] bg-slate-800/60 px-4 py-3 text-xs font-medium text-slate-300">
-                    <span>Fichier détecté</span><span>État Git & action</span>
+                    <span>{t.sensitiveStep.colFile}</span><span>{t.sensitiveStep.colAction}</span>
                   </div>
                   {analysis.sensitiveFiles.length === 0 ? (
                     <div className="flex items-center gap-3 p-6 text-sm text-emerald-300">
-                      <ShieldCheck size={20} />Aucun nom de fichier sensible connu détecté. Vérifie quand même manuellement les fichiers avant la publication.
+                      <ShieldCheck size={20} />{t.sensitiveStep.noSensitiveDetected}
                     </div>
                   ) : analysis.sensitiveFiles.map((filepath) => {
                     const tracked = trackedSensitive.includes(filepath);
@@ -601,7 +688,7 @@ export default function App() {
                         <div>
                           <p className="font-mono text-sm">{filepath}</p>
                           <p className={`mt-1 text-xs ${tracked ? "text-red-300" : "text-amber-300"}`}>
-                            {tracked ? "Danger : déjà suivi par Git. L’exclusion ne supprimera pas son historique." : "Fichier local suspect; son nom sera ajouté au .gitignore."}
+                            {tracked ? t.sensitiveStep.trackedDanger : t.sensitiveStep.untrackedWarn}
                           </p>
                         </div>
                         <button
@@ -610,16 +697,16 @@ export default function App() {
                           onClick={() => void reviewSensitiveFile(filepath)}
                           className={`rounded-md px-3 py-2 text-xs font-semibold disabled:opacity-50 ${tracked ? "bg-red-700 hover:bg-red-600" : "bg-amber-700 hover:bg-amber-600"}`}
                         >
-                          {tracked ? <><Unlink size={13} className="mr-1 inline" />Retirer du suivi & ignorer</> : "Ajouter au .gitignore"}
+                          {tracked ? <><Unlink size={13} className="mr-1 inline" />{t.sensitiveStep.untrackBtn}</> : t.sensitiveStep.ignoreBtn}
                         </button>
                       </div>
                     );
                   })}
                 </div>
                 <div className="flex justify-between">
-                  <button type="button" onClick={() => setStep(1)} className="rounded-md bg-slate-800 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700">← Retour</button>
+                  <button type="button" onClick={() => setStep(1)} className="rounded-md bg-slate-800 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700">{t.sensitiveStep.backBtn}</button>
                   <button type="button" onClick={() => setStep(3)} className="inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-2.5 text-sm font-semibold hover:bg-orange-500">
-                    Continuer vers le tableau de bord <ChevronRight size={16} />
+                    {t.sensitiveStep.continueBtn} <ChevronRight size={16} />
                   </button>
                 </div>
               </>
@@ -632,17 +719,17 @@ export default function App() {
             {!directory || !repoState ? (
               <div className="space-y-4">
                 <div className="rounded-xl border border-dashed border-slate-700 bg-[#171717] p-6 text-center text-sm text-slate-300">
-                  Sélectionne un dossier dans l’onglet « Projet » pour ouvrir son tableau de bord.
+                  {t.syncStep.noProjectSelected}
                 </div>
                 {directory && analysis && (
                   <div className="rounded-xl border border-slate-800 bg-[#171717] p-5">
-                    <h2 className="mb-2 font-semibold">Publier ce projet pour la première fois</h2>
-                    <p className="mb-4 text-sm text-slate-400">Un dépôt privé sera créé par défaut. Les fichiers sensibles encore suivis bloquent la publication.</p>
+                    <h2 className="mb-2 font-semibold">{t.syncStep.firstPublishTitle}</h2>
+                    <p className="mb-4 text-sm text-slate-400">{t.syncStep.firstPublishDesc}</p>
                     <div className="flex flex-wrap items-center gap-3">
-                      <input value={repoName} onChange={(event) => setRepoName(event.target.value)} placeholder="nom-du-depot" className="rounded-md border border-slate-700 bg-[#090909] px-3 py-2 text-sm" />
-                      <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={privateRepo} onChange={(event) => setPrivateRepo(event.target.checked)} />Dépôt privé</label>
+                      <input value={repoName} onChange={(event) => setRepoName(event.target.value)} placeholder={t.syncStep.repoNamePlaceholder} className="rounded-md border border-slate-700 bg-[#090909] px-3 py-2 text-sm" />
+                      <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={privateRepo} onChange={(event) => setPrivateRepo(event.target.checked)} />{t.syncStep.privateRepoCheckbox}</label>
                       <button type="button" onClick={() => void createAndPublish()} disabled={busy || !auth.token} className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40">
-                        <CloudUpload size={15} className="mr-1 inline" />Créer & publier
+                        <CloudUpload size={15} className="mr-1 inline" />{t.syncStep.createAndPublishBtn}
                       </button>
                     </div>
                   </div>
@@ -652,59 +739,59 @@ export default function App() {
               <>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2 rounded-lg border border-slate-700 bg-[#171717] px-3 py-2 text-sm">
-                    <GitBranch size={16} className="text-orange-300" />Branche : <strong>{repoState.branch}</strong>
+                    <GitBranch size={16} className="text-orange-300" />{t.syncStep.branchLabel} <strong>{repoState.branch}</strong>
                   </div>
                   <button type="button" onClick={() => void refreshProjectState()} disabled={busy} className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-50">
-                    <RefreshCw size={15} />Actualiser
+                    <RefreshCw size={15} />{t.syncStep.refreshBtn}
                   </button>
                 </div>
                 <div className="grid gap-4 md:grid-cols-3">
-                  <StatCard icon={<CloudUpload />} title={String(divergence?.ahead ?? "—")} detail="Commits locaux en avance" color="orange" />
-                  <StatCard icon={<CloudDownload />} title={String(divergence?.behind ?? "—")} detail="Commits distants en avance" color="amber" />
-                  <StatCard icon={<Check />} title={repoState.changedFiles ? `${repoState.changedFiles} fichier(s)` : "Propre"} detail={repoState.changedFiles ? "Modifications locales" : "État local"} color={repoState.changedFiles ? "amber" : "emerald"} />
+                  <StatCard icon={<CloudUpload />} title={String(divergence?.ahead ?? "—")} detail={t.syncStep.statAhead} color="orange" />
+                  <StatCard icon={<CloudDownload />} title={String(divergence?.behind ?? "—")} detail={t.syncStep.statBehind} color="amber" />
+                  <StatCard icon={<Check />} title={repoState.changedFiles ? `${repoState.changedFiles} ${t.projectStep.filesCount}` : t.syncStep.statClean} detail={repoState.changedFiles ? t.syncStep.statLocalChanges : t.syncStep.statLocalState} color={repoState.changedFiles ? "amber" : "emerald"} />
                 </div>
-                {divergence?.truncated && <p className="text-xs text-amber-300">La divergence dépasse la limite de comparaison; les valeurs affichées sont des minimums.</p>}
+                {divergence?.truncated && <p className="text-xs text-amber-300">{t.syncStep.divergenceTruncated}</p>}
                 <div className="rounded-xl border border-slate-800 bg-[#171717] p-5">
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
                     <div>
-                      <h2 className="font-semibold">Actions de synchronisation sécurisées</h2>
-                      <p className="mt-1 text-xs text-slate-400">La récupération distante est en fast-forward seulement; aucune réécriture forcée n’est utilisée.</p>
+                      <h2 className="font-semibold">{t.syncStep.actionsTitle}</h2>
+                      <p className="mt-1 text-xs text-slate-400">{t.syncStep.actionsDesc}</p>
                     </div>
                     <button type="button" onClick={() => void refreshRemoteStatus()} disabled={busy || !auth.token || !repoState.remoteUrl} className="rounded-md border border-slate-700 px-3 py-2 text-xs hover:bg-slate-800 disabled:opacity-40">
-                      Comparer l’état local avec GitHub
+                      {t.syncStep.compareBtn}
                     </button>
                   </div>
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="rounded-lg border border-slate-800 bg-[#0d0d0d] p-4">
-                      <h3 className="font-medium"><CloudDownload size={16} className="mr-2 inline text-orange-300" />Mettre à jour</h3>
-                      <p className="my-3 text-xs text-slate-400">Télécharge les commits déjà présents sur GitHub. Nécessite un dossier local sans changements; aucun fichier local n’est envoyé.</p>
+                      <h3 className="font-medium"><CloudDownload size={16} className="mr-2 inline text-orange-300" />{t.syncStep.updateCardTitle}</h3>
+                      <p className="my-3 text-xs text-slate-400">{t.syncStep.updateCardDesc}</p>
                       <button type="button" onClick={() => void downloadGitHubChanges()} disabled={busy || !auth.token || !repoState.remoteUrl} className="w-full rounded-md bg-orange-600 px-3 py-2 text-sm font-semibold hover:bg-orange-500 disabled:opacity-40">
-                        Récupérer les mises à jour GitHub
+                        {t.syncStep.updateBtn}
                       </button>
                     </div>
                     <div className="rounded-lg border border-slate-800 bg-[#0d0d0d] p-4">
-                      <h3 className="font-medium"><CloudUpload size={16} className="mr-2 inline text-emerald-300" />Publier / synchroniser</h3>
-                      <p className="my-3 text-xs text-slate-400">Les changements locaux sont commités avec le message ci-dessous, puis synchronisés sans force push.</p>
-                      <input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} aria-label="Message du commit" className="mb-2 w-full rounded-md border border-slate-700 bg-[#090909] px-3 py-2 text-xs" />
+                      <h3 className="font-medium"><CloudUpload size={16} className="mr-2 inline text-emerald-300" />{t.syncStep.publishCardTitle}</h3>
+                      <p className="my-3 text-xs text-slate-400">{t.syncStep.publishCardDesc}</p>
+                      <input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} aria-label={t.syncStep.commitMsgPlaceholder} placeholder={t.syncStep.commitMsgPlaceholder} className="mb-2 w-full rounded-md border border-slate-700 bg-[#090909] px-3 py-2 text-xs" />
                       <button type="button" onClick={() => void publishChanges()} disabled={busy || !auth.token || !repoState.remoteUrl} className="w-full rounded-md bg-emerald-700 px-3 py-2 text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40">
-                        Publier mes modifications
+                        {t.syncStep.publishBtn}
                       </button>
                     </div>
                   </div>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-[#171717] p-5">
-                  <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">Historique récent</h2>
+                  <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">{t.syncStep.recentHistoryTitle}</h2>
                   {repoState.recentCommits.length ? (
                     <ul className="space-y-3">
                       {repoState.recentCommits.map((commit) => (
                         <li key={commit.oid} className="flex items-start gap-3 text-sm">
                           <code className="rounded border border-orange-900 bg-orange-950/40 px-2 py-0.5 text-xs text-orange-200">{commit.oid}</code>
-                          <span className="min-w-0 flex-1 truncate">{commit.message || "Commit sans message"}</span>
-                          <time className="shrink-0 text-xs text-slate-500">{new Date(commit.timestamp * 1000).toLocaleString()}</time>
+                          <span className="min-w-0 flex-1 truncate">{commit.message || t.syncStep.unnamedCommit}</span>
+                          <time className="shrink-0 text-xs text-slate-500">{new Date(commit.timestamp * 1000).toLocaleString(lang === "fr" ? "fr-FR" : "en-US")}</time>
                         </li>
                       ))}
                     </ul>
-                  ) : <p className="text-sm text-slate-400">Aucun commit dans ce dépôt pour le moment.</p>}
+                  ) : <p className="text-sm text-slate-400">{t.syncStep.noCommits}</p>}
                 </div>
               </>
             )}
@@ -715,33 +802,32 @@ export default function App() {
           <section className="mx-auto max-w-3xl rounded-xl border border-slate-800 bg-[#171717] p-5">
             <div className="mb-5 flex items-center justify-between border-b border-slate-800 pb-4">
               <div>
-                <h2 className="font-semibold">Assistant de clonage sécurisé</h2>
-                <p className="mt-1 text-sm text-slate-400">Le dépôt est créé dans un nouveau dossier enfant. Aucun fichier existant n’est remplacé.</p>
+                <h2 className="font-semibold">{t.cloneStep.title}</h2>
+                <p className="mt-1 text-sm text-slate-400">{t.cloneStep.desc}</p>
               </div>
-              <span className="rounded-md border border-orange-900 bg-orange-950/30 px-2 py-1 text-xs text-orange-300">GitHub HTTPS</span>
+              <span className="rounded-md border border-orange-900 bg-orange-950/30 px-2 py-1 text-xs text-orange-300">{t.cloneStep.badge}</span>
             </div>
-            <label htmlFor="clone-url" className="mb-1 block text-sm">URL du dépôt GitHub distant</label>
-            <input id="clone-url" value={cloneUrl} onChange={(event) => setCloneUrl(event.target.value)} placeholder="https://github.com/organisation/nom-du-projet.git" className="mb-4 w-full rounded-md border border-slate-700 bg-[#090909] px-3 py-2 font-mono text-xs outline-none focus:border-orange-500" />
-            <label className="mb-1 block text-sm">Dossier parent cible</label>
+            <label htmlFor="clone-url" className="mb-1 block text-sm">{t.cloneStep.urlLabel}</label>
+            <input id="clone-url" value={cloneUrl} onChange={(event) => setCloneUrl(event.target.value)} placeholder={t.cloneStep.urlPlaceholder} className="mb-4 w-full rounded-md border border-slate-700 bg-[#090909] px-3 py-2 font-mono text-xs outline-none focus:border-orange-500" />
+            <label className="mb-1 block text-sm">{t.cloneStep.parentLabel}</label>
             <div className="mb-4 flex gap-2">
-              <input value={cloneParent} readOnly placeholder="Choisir un dossier parent…" className="min-w-0 flex-1 rounded-md border border-slate-700 bg-[#090909] px-3 py-2 font-mono text-xs" />
-              <button type="button" onClick={() => void chooseCloneParent()} className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"><Folder size={15} className="mr-1 inline" />Parcourir</button>
+              <input value={cloneParent} readOnly placeholder={t.cloneStep.parentPlaceholder} className="min-w-0 flex-1 rounded-md border border-slate-700 bg-[#090909] px-3 py-2 font-mono text-xs" />
+              <button type="button" onClick={() => void chooseCloneParent()} className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"><Folder size={15} className="mr-1 inline" />{t.cloneStep.browseBtn}</button>
             </div>
             <div className="rounded-lg border border-orange-900 bg-orange-950/20 p-4">
-              <p className="mb-2 text-sm font-medium"><FolderGit2 size={15} className="mr-2 inline text-orange-300" />Sous-dossier qui sera créé</p>
-              <code className="block break-all rounded bg-[#090909] px-3 py-2 text-xs text-emerald-300">{cloneTarget || "Sélectionne une URL et un dossier parent"}</code>
-              <p className="mt-2 text-xs text-slate-400">Si le dossier cible existe déjà et contient des fichiers, le clonage s’arrête sans les modifier.</p>
+              <p className="mb-2 text-sm font-medium"><FolderGit2 size={15} className="mr-2 inline text-orange-300" />{t.cloneStep.subfolderLabel}</p>
+              <code className="block break-all rounded bg-[#090909] px-3 py-2 text-xs text-emerald-300">{cloneTarget || t.cloneStep.selectPrompt}</code>
+              <p className="mt-2 text-xs text-slate-400">{t.cloneStep.warningNotice}</p>
             </div>
             <div className="mt-5 flex items-center justify-between">
-              <button type="button" onClick={() => setStep(1)} className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700">Annuler</button>
+              <button type="button" onClick={() => setStep(1)} className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700">{t.cloneStep.cancelBtn}</button>
               <button type="button" onClick={() => void cloneRepository()} disabled={busy || !auth.token} className="rounded-md bg-orange-600 px-4 py-2.5 text-sm font-semibold hover:bg-orange-500 disabled:opacity-40">
-                <CloudDownload size={15} className="mr-2 inline" />Cloner le projet
+                <CloudDownload size={15} className="mr-2 inline" />{t.cloneStep.cloneBtn}
               </button>
             </div>
           </section>
         )}
 
-        {busy && <Loading label="Opération en cours…" />}
         {busy && (
           <div className="pointer-events-none fixed inset-0 z-10 flex items-center justify-center bg-black/20">
             <LoaderCircle className="animate-spin text-orange-400" size={36} />
@@ -750,7 +836,7 @@ export default function App() {
       </main>
 
       <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 bg-[#111111] px-4 py-2 text-xs text-slate-500 sm:px-6">
-        <span><span className="mr-2 text-emerald-400">●</span>Tauri · GitHub HTTPS · multi-plateforme</span>
+        <span><span className="mr-2 text-emerald-400">●</span>{t.app.footerTech}</span>
         <a className="inline-flex items-center gap-1 hover:text-slate-300" href="https://github.com" target="_blank" rel="noreferrer">GitHub <ExternalLink size={11} /></a>
       </footer>
     </div>

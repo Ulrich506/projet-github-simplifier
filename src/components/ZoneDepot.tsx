@@ -3,23 +3,27 @@ import { FolderPlus, UploadCloud } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDirectory } from "@tauri-apps/plugin-dialog";
 
+import { Language, translations } from "../i18n";
+
 interface Props {
   onFolderSelected: (path: string) => void;
   erreur: string | null;
   disabled?: boolean;
   onError: (message: string) => void;
   action?: string | null;
+  lang?: Language;
 }
 
-export function ZoneDepot({ onFolderSelected, erreur, disabled = false, onError, action }: Props) {
+export function ZoneDepot({ onFolderSelected, erreur, disabled = false, onError, action, lang = "fr" }: Props) {
   const [survole, setSurvole] = useState(false);
+  const t = translations[lang].zoneDepot;
 
   async function parcourirDossier() {
     try {
       const path = await openDirectory({ directory: true, multiple: false });
       if (typeof path === "string" && !disabled) onFolderSelected(path);
     } catch (error) {
-      onError(error instanceof Error ? error.message : "Impossible d’ouvrir le sélecteur de dossier.");
+      onError(error instanceof Error ? error.message : t.dialogError);
     }
   }
 
@@ -72,10 +76,10 @@ export function ZoneDepot({ onFolderSelected, erreur, disabled = false, onError,
           <UploadCloud size={30} />
         </div>
         <p className="text-lg font-semibold text-slate-100 sm:text-xl">
-          {action === "maj" ? "Dépose le projet à mettre à jour" : "Glisse-dépose un dossier de projet ici"}
+          {action === "maj" ? t.titleUpdate : t.titleDefault}
         </p>
         <p className="mt-2 text-sm text-slate-400">
-          Les dépendances et dossiers de compilation sont ignorés automatiquement.
+          {t.subtitle}
         </p>
         <button
           type="button"
@@ -84,7 +88,7 @@ export function ZoneDepot({ onFolderSelected, erreur, disabled = false, onError,
           className="mt-6 inline-flex items-center gap-2 rounded-lg bg-orange-600 px-5 py-2.5 text-sm font-semibold hover:bg-orange-500 disabled:cursor-wait disabled:opacity-50"
         >
           <FolderPlus size={16} />
-          Parcourir un dossier
+          {t.browseBtn}
         </button>
       </div>
     </div>
