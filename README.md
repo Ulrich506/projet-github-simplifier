@@ -60,7 +60,12 @@ git tag v0.1.0
 git push --tags
 ```
 
-Après vérification des artefacts, publie la Release brouillon depuis GitHub.
+Les fichiers sont téléchargeables depuis deux endroits :
+
+- Dans **Actions → exécution du workflow → Artifacts**, sous la forme d’un
+  artefact par système. Ces téléchargements temporaires sont conservés 14 jours.
+- Dans **Releases**, les installeurs sont joints à la Release brouillon pour
+  distribution durable. Après vérification des fichiers, publie cette Release.
 
 ## Structure
 

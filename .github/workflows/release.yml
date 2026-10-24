@@ -25,10 +25,17 @@ jobs:
         include:
           - platform: ubuntu-22.04
             args: --bundles deb,appimage
+            artifact-path: |
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/appimage/*.AppImage
           - platform: windows-latest
             args: --bundles nsis,msi
+            artifact-path: |
+              src-tauri/target/release/bundle/nsis/*.exe
+              src-tauri/target/release/bundle/msi/*.msi
           - platform: macos-latest
             args: --bundles dmg
+            artifact-path: src-tauri/target/release/bundle/dmg/*.dmg
 
     steps:
       - name: Checkout
@@ -81,3 +88,11 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Upload installers as downloadable workflow artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: Gsimplifie-${{ github.ref_name }}-${{ matrix.platform }}
+          path: ${{ matrix.artifact-path }}
+          if-no-files-found: error
+          retention-days: 14
