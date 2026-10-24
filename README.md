@@ -63,7 +63,9 @@ git push --tags
 Les fichiers sont téléchargeables depuis deux endroits :
 
 - Dans **Actions → exécution du workflow → Artifacts**, sous la forme d’un
-  artefact par système. Ces téléchargements temporaires sont conservés 14 jours.
+  artefact téléchargeable distinct par format d’installation (`.deb`,
+  `.AppImage`, `.exe`, `.msi` et `.dmg`). Ces téléchargements temporaires sont
+  conservés 14 jours.
 - Dans **Releases**, les installeurs sont joints à la Release brouillon pour
   distribution durable. Après vérification des fichiers, publie cette Release.
 
