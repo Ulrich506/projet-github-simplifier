@@ -26,14 +26,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["deb", "appimage", "rpm", "nsis", "msi"],
     "category": "DeveloperTool",
     "shortDescription": "Publiez et synchronisez vos projets GitHub sans ligne de commande.",
     "longDescription": "Application de bureau multiplateforme pour publier, mettre à jour et cloner des projets GitHub.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
-      "icons/icon.icns",
       "icons/icon.ico"
     ]
   }

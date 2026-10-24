@@ -3,7 +3,7 @@ import { FolderPlus, UploadCloud } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDirectory } from "@tauri-apps/plugin-dialog";
 
-import { Language, translations } from "../i18n";
+import { getTranslations, type Language } from "../i18n";
 
 interface Props {
   onFolderSelected: (path: string) => void;
@@ -16,7 +16,7 @@ interface Props {
 
 export function ZoneDepot({ onFolderSelected, erreur, disabled = false, onError, action, lang = "fr" }: Props) {
   const [survole, setSurvole] = useState(false);
-  const t = translations[lang].zoneDepot;
+  const t = getTranslations(lang).zoneDepot;
 
   async function parcourirDossier() {
     try {
@@ -53,7 +53,7 @@ export function ZoneDepot({ onFolderSelected, erreur, disabled = false, onError,
   }
 
   return (
-    <div className="mx-auto w-full max-w-4xl space-y-4">
+    <div className="w-full space-y-4">
       {erreur && (
         <div className="rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-200">
           {erreur}

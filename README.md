@@ -9,19 +9,23 @@ l'action → confirmer.
 Télécharge l’installeur correspondant à ton système depuis la page
 [Releases](https://github.com/Ulrich506/projet-github-simplifier/releases) :
 
-- **Linux** : paquet `.deb` ou image `.AppImage`.
+- **Linux** : paquets `.deb`, `.rpm` ou image `.AppImage`.
 - **Windows** : installeur `.exe` (NSIS) ou `.msi`.
-- **macOS** : image `.dmg` lorsqu’elle est disponible.
 
 Les versions ne sont pas signées pour le moment. Windows SmartScreen peut
-afficher un avertissement; sur macOS, Gatekeeper peut demander une confirmation
-ou empêcher l’ouverture. N’installe que les fichiers provenant des Releases
+afficher un avertissement. N’installe que les fichiers provenant des Releases
 officielles de ce dépôt.
 
 Sur Ubuntu/Debian, installe un paquet téléchargé avec :
 
 ```bash
 sudo apt install ./Gsimplifie_0.1.0_amd64.deb
+```
+
+Sur Fedora ou une distribution compatible RPM :
+
+```bash
+sudo dnf install ./Gsimplifie-0.1.0-1.x86_64.rpm
 ```
 
 Pour une AppImage, rends le fichier exécutable puis lance-le :
@@ -49,11 +53,16 @@ Le build local de production s’effectue avec :
 npm run tauri build
 ```
 
+Les préférences (français, anglais, espagnol ou arabe, thème clair/sombre et
+palette) se trouvent dans le bouton **Paramètres**. Les thèmes peuvent être
+exportés ou importés sous forme de fichiers JSON locaux; aucun catalogue distant
+ni contenu de thème exécuté n’est utilisé.
+
 ## Publier une version
 
 Vérifie que la version dans `src-tauri/tauri.conf.json` est celle souhaitée,
 puis crée et pousse un tag. Le workflow GitHub Actions compile les installeurs
-Linux, Windows et macOS et les ajoute à une Release en brouillon :
+Linux et Windows et les ajoute à une Release en brouillon :
 
 ```bash
 git tag v0.1.0
@@ -64,7 +73,7 @@ Les fichiers sont téléchargeables depuis deux endroits :
 
 - Dans **Actions → exécution du workflow → Artifacts**, sous la forme d’un
   artefact téléchargeable distinct par format d’installation (`.deb`,
-  `.AppImage`, `.exe`, `.msi` et `.dmg`). Ces téléchargements temporaires sont
+  `.AppImage`, `.rpm`, `.exe` et `.msi`). Ces téléchargements temporaires sont
   conservés 14 jours.
 - Dans **Releases**, les installeurs sont joints à la Release brouillon pour
   distribution durable. Après vérification des fichiers, publie cette Release.
@@ -104,32 +113,31 @@ src-tauri/
   build.rs
   tauri.conf.json
   src/main.rs
-  src/lib.rs                  # enregistrement des 3 plugins
-  capabilities/default.json   # permissions http (github.com/api.github.com), fs ($HOME/**), dialog
-  icons/                      # icônes générées (32x32, 128x128, 128x128@2x, icon.ico, icon.icns)
+  src/lib.rs                  # plugins, comptes sécurisés et autorisations du dossier choisi
+  capabilities/default.json   # permissions http (github.com/api.github.com), fs, dialog
+  icons/                      # icônes générées pour le logiciel
 ```
 
 ## Flow complet
 
-1. **Connexion** — Device Flow avec un code temporaire. Après validation, la session est conservée dans le trousseau sécurisé du système (Keychain, Windows Credential Manager ou Secret Service sous Linux) et revalidée au prochain lancement.
+1. **Connexion** — Device Flow avec un code temporaire. Les comptes sont conservés dans le trousseau sécurisé du système (Keychain, Windows Credential Manager ou Secret Service sous Linux); la déconnexion ferme la session active sans supprimer les comptes mémorisés.
 2. **Dépôt** — `ZoneDepot` : glisser-déposer natif Tauri, donne un vrai chemin disque (pas un objet `File` du navigateur)
-3. **Analyse** — `projectAnalyzer` détecte le type de projet et les fichiers sensibles à partir des chemins
-4. **Action** — `MenuActions` : créer / publier / mettre à jour / récupérer
-5. **Confirmation** — `EcranConfirmation`, avec le nom du dépôt (pré-rempli avec le nom du dossier)
-6. **Exécution** — `EcranProgression`, branché sur `gitService` + `githubService`, git opère directement sur le vrai dossier via `tauriFsBridge`
-7. **Résultat** — `EcranResultat`, lien vers le dépôt
+3. **Analyse** — `projectAnalyzer` détecte le type de projet et les fichiers sensibles à partir des chemins.
+4. **Aperçu** — liste des fichiers et lecture seule des fichiers texte du projet sélectionné.
+5. **Publication / mise à jour** — création initiale du dépôt ou commit et synchronisation sans écrasement forcé.
+6. **Clonage** — dépôt GitHub public sans connexion ou dépôt privé avec un compte autorisé.
 
 Toutes les actions sont câblées et fonctionnelles :
-- **creer / publier** : crée le dépôt sur GitHub (ou le récupère s'il existe déjà), initialise Git si besoin, commit et push — directement dans le dossier déposé
-- **maj** : pull + commit + push sur le dépôt déjà connu de la session
-- **recuperer** : ouvre un sélecteur de dossier de destination puis clone le dépôt choisi
+- **Créer & publier** : initialise Git si nécessaire, crée le dépôt distant, commit et push.
+- **Mettre à jour** : commit et synchronisation non forcée du projet déjà associé.
+- **Cloner** : clone d’abord dans un dossier temporaire, puis le déplace à destination une fois terminé.
 
 ## Prochaines étapes concrètes
 
 1. Régénérer `src-tauri/` avec `npm create tauri-app@latest -- --template react-ts` pour une base à jour si besoin — ce scaffold est minimal
 2. Créer une OAuth App sur github.com/settings/developers avec le **Device Flow activé** (case à cocher + "Update application"), coller le `client_id` dans `githubAuth.ts`
 3. Gérer les conflits de "mise à jour" sans jargon : proposer "garder ma version" / "garder celle en ligne" plutôt que merge/rebase
-4. La portée `fs:default` dans `capabilities/default.json` est limitée à `$HOME/**` — un dossier déposé depuis un disque externe ou un point de montage hors du home échouera. Élargir la portée (ou utiliser `scope` dynamique via le plugin dialog) si besoin
+4. La portée filesystem est accordée dynamiquement au dossier sélectionné par l’utilisateur et à ses descendants; aucun accès global au disque n’est demandé.
 
 ## Points de vigilance
 

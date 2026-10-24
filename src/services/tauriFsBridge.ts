@@ -22,7 +22,11 @@ interface ErreurFS extends Error {
 function erreurFS(err: unknown, chemin: string): ErreurFS {
   const message = err instanceof Error ? err.message : String(err);
   const e = new Error(message) as ErreurFS;
-  if (/no such file|not found|cannot find|os error 2/i.test(message)) {
+  if (
+    /no such file|not found|cannot find|path not found|introuvable|os error (?:2|3)\b|winerror\s*3\b/i.test(
+      message
+    )
+  ) {
     e.code = "ENOENT";
   }
   e.message = `${message} (${chemin})`;

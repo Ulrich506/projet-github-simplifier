@@ -1,6 +1,6 @@
 import git from "isomorphic-git";
-import { join } from "@tauri-apps/api/path";
-import { creerHttpGitHub } from "./tauriGitHttp";
+import { dirname, join } from "@tauri-apps/api/path";
+import { creerHttpGitHub, tauriGitHttp } from "./tauriGitHttp";
 import { estLienSymbolique, tauriFsBridge as fs } from "./tauriFsBridge";
 import { isSensitivePath } from "./projectAnalyzer";
 import { listerCheminsRelatifs } from "./fileSystemUtils";
@@ -18,12 +18,6 @@ export interface EtatDepot {
   remoteUrl: string | null;
   changedFiles: number;
   recentCommits: { oid: string; message: string; timestamp: number }[];
-}
-
-export interface DivergenceDepot {
-  ahead: number;
-  behind: number;
-  truncated: boolean;
 }
 
 /**
@@ -209,107 +203,23 @@ export async function obtenirEtatDepot(dir: string): Promise<EtatDepot> {
   };
 }
 
-export async function obtenirDivergenceDepot(dir: string, token: string): Promise<DivergenceDepot> {
-  if (!token.trim()) throw new Error("Connecte-toi à GitHub pour vérifier la synchronisation.");
-  const branch = await obtenirBrancheCourante(dir);
-  const remoteUrl = await obtenirUrlDistante(dir);
-  if (!remoteUrl || !validateGitHubRemote(remoteUrl)) {
-    throw new Error("Associe un dépôt distant HTTPS GitHub valide avant de vérifier la synchronisation.");
-  }
-
-  const hasLocalCommit = await contientCommit(dir);
-  const http = creerHttpGitHub(token);
-
-  // Vérifier si le dépôt distant possède des références
-  let serverRefs: { ref: string; oid: string }[] = [];
-  try {
-    serverRefs = await git.listServerRefs({
-      http,
-      url: remoteUrl,
-      onAuth: () => authGitHub(token),
-      headers: { "User-Agent": "GitHub-Simplifie/1.0" },
-    });
-  } catch {
-    // En cas d'échec du listServerRefs, on continue avec git.fetch
-  }
-
-  if (serverRefs.length === 0) {
-    if (!hasLocalCommit) return { ahead: 0, behind: 0, truncated: false };
-    const localHistory = await git.log({ fs, dir, depth: 100 }).catch(() => []);
-    return { ahead: localHistory.length, behind: 0, truncated: false };
-  }
-
-  if (!hasLocalCommit) {
-    return { ahead: 0, behind: serverRefs.length > 0 ? 1 : 0, truncated: false };
-  }
-
-  try {
-    await git.fetch({
-      fs,
-      http,
-      dir,
-      remote: "origin",
-      ref: branch,
-      singleBranch: true,
-      onAuth: () => authGitHub(token),
-      headers: { "User-Agent": "GitHub-Simplifie/1.0" },
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/ref\.length|null is not an object|cannot read properties of null/i.test(msg)) {
-      return { ahead: 0, behind: 0, truncated: false };
-    }
-  }
-
-  const remoteRef = `refs/remotes/origin/${branch}`;
-  let localOid: string | null = null;
-  let remoteOid: string | null = null;
-
-  try {
-    localOid = await git.resolveRef({ fs, dir, ref: `refs/heads/${branch}` });
-  } catch {
-    return { ahead: 0, behind: 0, truncated: false };
-  }
-
-  try {
-    remoteOid = await git.resolveRef({ fs, dir, ref: remoteRef });
-  } catch {
-    const localHistory = await git.log({ fs, dir, depth: 100 }).catch(() => []);
-    return { ahead: localHistory.length, behind: 0, truncated: false };
-  }
-
-  if (!localOid || !remoteOid || localOid === remoteOid) {
-    return { ahead: 0, behind: 0, truncated: false };
-  }
-
-  const mergeBases = await git.findMergeBase({ fs, dir, oids: [localOid, remoteOid] }).catch(() => []);
-  const mergeBase = mergeBases[0];
-  if (typeof mergeBase !== "string" || !mergeBase) {
-    return { ahead: 0, behind: 0, truncated: false };
-  }
-
-  const [localHistory, remoteHistory] = await Promise.all([
-    git.log({ fs, dir, ref: localOid, depth: 1000 }).catch(() => []),
-    git.log({ fs, dir, ref: remoteOid, depth: 1000 }).catch(() => []),
-  ]);
-  const localBaseIndex = localHistory.findIndex(({ oid }) => oid === mergeBase);
-  const remoteBaseIndex = remoteHistory.findIndex(({ oid }) => oid === mergeBase);
-  return {
-    ahead: localBaseIndex < 0 ? localHistory.length : localBaseIndex,
-    behind: remoteBaseIndex < 0 ? remoteHistory.length : remoteBaseIndex,
-    truncated: localBaseIndex < 0 || remoteBaseIndex < 0,
-  };
-}
-
 export async function obtenirFichiersSensiblesSuivis(dir: string): Promise<string[]> {
   return (await git.listFiles({ fs, dir })).filter(isSensitivePath);
 }
 
 export async function obtenirFichiersSensiblesAffectes(dir: string): Promise<string[]> {
-  const [tracked, filesOnDisk] = await Promise.all([
-    git.listFiles({ fs, dir }),
-    listerCheminsRelatifs(dir),
-  ]);
+  const filesOnDisk = await listerCheminsRelatifs(dir);
+  let hasGitMetadata = true;
+  try {
+    await fs.promises.stat(await join(dir, ".git"));
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      hasGitMetadata = false;
+    } else {
+      throw error;
+    }
+  }
+  const tracked = hasGitMetadata ? await git.listFiles({ fs, dir }) : [];
   return [...new Set([...tracked, ...filesOnDisk].filter(isSensitivePath))];
 }
 
@@ -552,23 +462,43 @@ export async function recuperer({
   token,
   onProgress,
 }: OperationDistante): Promise<void> {
-  if (!token.trim()) throw new Error("Connecte-toi à GitHub avant de cloner.");
-  const http = creerHttpGitHub(token);
-  if (!validateGitHubRemote(remoteUrl ?? "")) {
+  const accessToken = token.trim();
+  const http = accessToken ? creerHttpGitHub(accessToken) : tauriGitHttp;
+  const normalizedRemoteUrl = validateGitHubRemote(remoteUrl ?? "");
+  if (!normalizedRemoteUrl) {
     throw new Error("L’URL du dépôt à cloner doit être une URL HTTPS GitHub valide.");
   }
-  await fs.promises.mkdir(dir);
-  const entries = await fs.promises.readdir(dir);
-  if (entries.length > 0) {
-    throw new Error("Le dossier de destination n’est pas vide. Choisis un nouveau sous-dossier.");
+  try {
+    await fs.promises.stat(dir);
+    throw new Error("Le dossier de destination existe déjà. Choisis un nouveau nom ou dossier parent.");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+      throw error;
+    }
   }
-  await git.clone({
-    fs,
-    http,
-    dir,
-    url: remoteUrl ?? "",
-    onAuth: () => authGitHub(token),
-    headers: { "User-Agent": "GitHub-Simplifie/1.0" },
-    onProgress: (evt) => onProgress?.(evt as ProgressionGit),
-  });
+
+  const stagingDir = await join(await dirname(dir), `.gsimplifie-clone-${crypto.randomUUID()}`);
+  await fs.promises.mkdir(stagingDir);
+  try {
+    await git.clone({
+      fs,
+      http,
+      dir: stagingDir,
+      url: normalizedRemoteUrl,
+      ...(accessToken ? { onAuth: () => authGitHub(accessToken) } : {}),
+      headers: { "User-Agent": "GitHub-Simplifie/1.0" },
+      onProgress: (evt) => onProgress?.(evt as ProgressionGit),
+    });
+    await fs.promises.rename(stagingDir, dir);
+  } catch (error) {
+    try {
+      await fs.promises.rmdir(stagingDir);
+    } catch (cleanupError) {
+      const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}. Le nettoyage du dossier temporaire a également échoué : ${message}`
+      );
+    }
+    throw error;
+  }
 }

@@ -61,6 +61,6 @@ export async function analyzeProject(chemins: string[]): Promise<AnalyseProjet> 
     suggestedGitignore: detected?.gitignore ?? "",
     hasExistingGit,
     sensitiveFiles,
-    fileCount: chemins.length,
+    fileCount: chemins.filter((chemin) => chemin !== ".git").length,
   };
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-shell";
-import { Language, translations, translateError } from "../i18n";
+import { getTranslations, translateError, type Language } from "../i18n";
 
 interface Props {
   codeUtilisateur: string | null;
@@ -25,7 +25,7 @@ export function EcranConnexionGitHub({
   const [navigateurOuvert, setNavigateurOuvert] = useState(false);
   const [erreurOuverture, setErreurOuverture] = useState<string | null>(null);
   const ouvertureEffectuee = useRef(false);
-  const t = translations[lang].authModal;
+  const t = getTranslations(lang).authModal;
 
   useEffect(() => {
     ouvertureEffectuee.current = false;

@@ -18,17 +18,14 @@ jobs:
   release:
     name: Release (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
-    continue-on-error: ${{ matrix.platform == 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: ubuntu-22.04
-            args: --bundles deb,appimage
+            args: --bundles deb,appimage,rpm
           - platform: windows-latest
             args: --bundles nsis,msi
-          - platform: macos-latest
-            args: --bundles dmg
 
     steps:
       - name: Checkout
@@ -64,6 +61,7 @@ jobs:
             librsvg2-dev \
             libwebkit2gtk-4.1-dev \
             patchelf \
+            rpm \
             wget
 
       - name: Install frontend dependencies
@@ -77,9 +75,7 @@ jobs:
           tagName: ${{ inputs.tag || github.ref_name }}
           releaseName: Gsimplifié ${{ inputs.tag || github.ref_name }}
           releaseBody: |
-            Installeurs Gsimplifié pour Linux et Windows.
-
-            Les builds macOS sont fournis lorsqu'ils sont disponibles.
+            Installeurs Gsimplifié pour Linux (DEB, AppImage, RPM) et Windows (NSIS, MSI).
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -102,6 +98,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Upload Linux RPM package
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v5
+        with:
+          name: Gsimplifie-${{ inputs.tag || github.ref_name }}-linux-rpm
+          path: src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload Windows NSIS installer
         if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v5
@@ -117,14 +122,5 @@ jobs:
         with:
           name: Gsimplifie-${{ inputs.tag || github.ref_name }}-windows-msi
           path: src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload macOS disk image
-        if: matrix.platform == 'macos-latest'
-        uses: actions/upload-artifact@v5
-        with:
-          name: Gsimplifie-${{ inputs.tag || github.ref_name }}-macos-dmg
-          path: src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 14
