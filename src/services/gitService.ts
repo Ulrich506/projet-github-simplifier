@@ -78,8 +78,25 @@ async function contientCommit(dir: string): Promise<boolean> {
   }
 }
 
+async function garantirIdentiteGit(
+  dir: string,
+  identity?: { name: string; email: string }
+): Promise<{ name: string; email: string }> {
+  const configuredName = await git.getConfig({ fs, dir, path: "user.name" });
+  const configuredEmail = await git.getConfig({ fs, dir, path: "user.email" });
+  const name = identity?.name.trim() || (typeof configuredName === "string" ? configuredName.trim() : "") || "GitHub Simplifié";
+  const email = identity?.email.trim() || (typeof configuredEmail === "string" ? configuredEmail.trim() : "") || "github-simplifie@users.noreply.github.com";
+
+  await Promise.all([
+    git.setConfig({ fs, dir, path: "user.name", value: name }),
+    git.setConfig({ fs, dir, path: "user.email", value: email }),
+  ]);
+  return { name, email };
+}
+
 export async function initialiserDepot(dir: string): Promise<void> {
   await git.init({ fs, dir, defaultBranch: "main" });
+  await garantirIdentiteGit(dir);
 }
 
 export async function obtenirBrancheCourante(dir: string): Promise<string> {
@@ -306,6 +323,7 @@ export async function ajouterEtCommiter(
   if (!message.trim()) {
     throw new Error("Le message du commit ne peut pas être vide.");
   }
+  const identity = await garantirIdentiteGit(dir, author);
   await preparerGitignore(dir, "");
   await verifierAucunFichierSensible(dir);
   await ajouterTousLesFichiers(dir);
@@ -314,7 +332,8 @@ export async function ajouterEtCommiter(
     fs,
     dir,
     message,
-    author: author ?? { name: "GitHub Simplifié", email: "github-simplifie@users.noreply.github.com" },
+    author: identity,
+    committer: identity,
   });
 }
 
@@ -399,6 +418,7 @@ export async function recupererMisesAJour({
   if (!remoteUrl || !validateGitHubRemote(remoteUrl)) {
     throw new Error("Associe un dépôt distant HTTPS GitHub valide avant de synchroniser.");
   }
+  const identity = await garantirIdentiteGit(dir);
   await verifierAucunFichierSensible(dir);
   const statuses = await obtenirStatutsFichiers(dir);
   const changed = statuses.filter(([, status]) =>
@@ -416,6 +436,8 @@ export async function recupererMisesAJour({
     remote: "origin",
     singleBranch: true,
     fastForwardOnly: true,
+    author: identity,
+    committer: identity,
     onAuth: () => ({ username: token }),
     onProgress: (evt) => onProgress?.(evt as ProgressionGit),
   });
