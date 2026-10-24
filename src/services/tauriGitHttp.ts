@@ -37,9 +37,16 @@ async function* itererCorps(buffer: Uint8Array): AsyncIterableIterator<Uint8Arra
 export const tauriGitHttp = {
   async request({ url, method = "GET", headers = {}, body }: RequeteGit) {
     const corps = await concatenerCorps(body);
+    const requeteHeaders: Record<string, string> = {
+      ...headers,
+    };
+    if (!requeteHeaders["User-Agent"] && !requeteHeaders["user-agent"]) {
+      requeteHeaders["User-Agent"] = "GitHub-Simplifie/1.0";
+    }
+
     const res = await tauriFetch(url, {
       method,
-      headers,
+      headers: requeteHeaders,
       body: corps as BodyInit | undefined,
     });
 

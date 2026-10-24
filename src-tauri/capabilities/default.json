@@ -9,7 +9,12 @@
       "identifier": "http:default",
       "allow": [
         { "url": "https://github.com/*" },
-        { "url": "https://api.github.com/*" }
+        { "url": "https://api.github.com/*" },
+        { "url": "https://*.github.com/*" },
+        { "url": "https://*.githubusercontent.com/*" },
+        { "url": "https://raw.githubusercontent.com/*" },
+        { "url": "https://objects.githubusercontent.com/*" },
+        { "url": "https://codeload.github.com/*" }
       ]
     },
     {

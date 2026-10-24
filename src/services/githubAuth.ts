@@ -30,7 +30,11 @@ interface AccessTokenResponse {
 export async function demarrerConnexion(): Promise<DeviceCodeResponse> {
   const res = await tauriFetch("https://github.com/login/device/code", {
     method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": "GitHub-Simplifie/1.0",
+    },
     body: JSON.stringify({ client_id: CLIENT_ID, scope: "repo" }),
   });
 
@@ -63,7 +67,11 @@ export async function attendreValidation(
     await new Promise((r) => setTimeout(r, intervalleActuel * 1000));
     const res = await tauriFetch("https://github.com/login/oauth/access_token", {
       method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "GitHub-Simplifie/1.0",
+      },
       body: JSON.stringify({
         client_id: CLIENT_ID,
         device_code: deviceCode,

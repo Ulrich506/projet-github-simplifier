@@ -11,11 +11,19 @@ interface OptionsCreationDepot {
 function creerClientGitHub(token: string) {
   return new Octokit({
     auth: token,
+    userAgent: "GitHub-Simplifie/1.0",
     request: {
-      fetch: tauriFetch,
+      fetch: (url: string, opts?: RequestInit) => {
+        const headers = new Headers(opts?.headers);
+        if (!headers.has("User-Agent") && !headers.has("user-agent")) {
+          headers.set("User-Agent", "GitHub-Simplifie/1.0");
+        }
+        return tauriFetch(url, { ...opts, headers });
+      },
       headers: {
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "GitHub-Simplifie/1.0",
       },
     },
   });
