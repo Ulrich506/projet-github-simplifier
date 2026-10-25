@@ -2,6 +2,10 @@ import { readDir } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { enregistrerLienSymbolique } from "./tauriFsBridge";
 
+export function yieldToUi(): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+
 /**
  * Explore récursivement un dossier réel du disque (chemin obtenu via
  * l'event natif Tauri onDragDropEvent) et renvoie les chemins relatifs
@@ -32,12 +36,15 @@ export async function listerCheminsRelatifs(cheminAbsolu: string): Promise<strin
     ".idea",
     ".vscode",
   ]);
+  let entriesTraitees = 0;
 
   async function explorer(sousChemin: string, prefixeRelatif: string): Promise<void> {
     const entrees = await readDir(sousChemin);
     for (const entree of entrees) {
       const nom = entree.name ?? "";
       if (!nom) continue;
+      entriesTraitees += 1;
+      if (entriesTraitees % 128 === 0) await yieldToUi();
 
       const relatifEnfant = prefixeRelatif ? `${prefixeRelatif}/${nom}` : nom;
       if (entree.isSymlink) {

@@ -24,7 +24,9 @@ import {
 } from "lucide-react";
 import { useGitHubAuth } from "./hooks/useGitHubAuth";
 import { EcranConnexionGitHub } from "./components/EcranConnexionGitHub";
+import { CommitHistory } from "./components/CommitHistory";
 import { ExplorateurFichiers } from "./components/ExplorateurFichiers";
+import { PublicationWizard } from "./components/PublicationWizard";
 import { ProgressOverlay } from "./components/ProgressOverlay";
 import { SettingsModal, type AccentColor, type ThemeMode } from "./components/SettingsModal";
 import { ZoneDepot } from "./components/ZoneDepot";
@@ -46,8 +48,8 @@ import {
   recuperer,
   type EtatDepot,
 } from "./services/gitService";
-import { creerOuRecupererDepot, verifierPublication } from "./services/githubService";
-import type { AnalyseProjet, ProgressionGit } from "./types";
+import { creerOuRecupererDepot, listerDepots, verifierPublication } from "./services/githubService";
+import type { AnalyseProjet, DepotGitHub, ProgressionGit } from "./types";
 import {
   getInitialLanguage,
   getTranslations,
@@ -107,11 +109,24 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [securityNoteVisible, setSecurityNoteVisible] = useState(true);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  const [publicationWizardOpen, setPublicationWizardOpen] = useState(false);
+  const [publicationMode, setPublicationMode] = useState<"create" | "update">("update");
+  const [cloneRepositories, setCloneRepositories] = useState<DepotGitHub[]>([]);
+  const [cloneRepositoriesLoading, setCloneRepositoriesLoading] = useState(false);
+  const [cloneRepositoriesError, setCloneRepositoriesError] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressionAffichee | null>(null);
   const progressFrame = useRef<number | null>(null);
   const pendingProgress = useRef<ProgressionAffichee | null>(null);
   const renderedProgressPercent = useRef(0);
+  const refreshTimer = useRef<number | null>(null);
+  const refreshRequests = useRef<{ resolve: () => void; reject: (cause: unknown) => void; keepBusy: boolean }[]>([]);
+  const refreshDirectory = useRef<string | null>(null);
   const selectionEnCours = useRef(false);
+
+  useEffect(() => () => {
+    if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current);
+    refreshRequests.current.splice(0).forEach((request) => request.resolve());
+  }, []);
 
   // Sync commit message default when language changes if untouched
   useEffect(() => {
@@ -208,25 +223,45 @@ export default function App() {
     }
   }
 
-  async function refreshProjectState(keepBusy = false) {
-    if (!directory) return;
-    if (!keepBusy) setBusy(true);
-    setError(null);
-    try {
-      const [state, sensitive] = await Promise.all([
-        obtenirEtatDepot(directory),
-        obtenirFichiersSensiblesSuivis(directory),
-      ]);
-      setRepoState(state);
-      setTrackedSensitive(sensitive);
-      setRemoteInput(state.remoteUrl ?? "");
-    } catch (cause) {
-      setError(displayError(cause));
-      throw cause;
-    } finally {
-      if (!keepBusy) setBusy(false);
-    }
-  }
+  const refreshProjectState = useCallback((keepBusy = false): Promise<void> => {
+    if (!directory) return Promise.resolve();
+    refreshDirectory.current = directory;
+
+    const request = new Promise<void>((resolve, reject) => {
+      refreshRequests.current.push({ resolve, reject, keepBusy });
+    });
+    if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current);
+    refreshTimer.current = window.setTimeout(() => {
+      refreshTimer.current = null;
+      const requests = refreshRequests.current.splice(0);
+      const targetDirectory = refreshDirectory.current;
+      const shouldShowBusy = requests.some((item) => !item.keepBusy);
+      if (!targetDirectory) {
+        requests.forEach((item) => item.resolve());
+        return;
+      }
+      if (shouldShowBusy) setBusy(true);
+      setError(null);
+      void Promise.all([
+        obtenirEtatDepot(targetDirectory),
+        obtenirFichiersSensiblesSuivis(targetDirectory),
+      ])
+        .then(([state, sensitive]) => {
+          setRepoState(state);
+          setTrackedSensitive(sensitive);
+          setRemoteInput(state.remoteUrl ?? "");
+          requests.forEach((item) => item.resolve());
+        })
+        .catch((cause: unknown) => {
+          setError(displayError(cause));
+          requests.forEach((item) => item.reject(cause));
+        })
+        .finally(() => {
+          if (shouldShowBusy) setBusy(false);
+        });
+    }, 300);
+    return request;
+  }, [directory, displayError]);
 
   async function associateRemote() {
     if (!directory) return;
@@ -342,6 +377,7 @@ export default function App() {
 
   async function publishChanges() {
     if (!directory || !auth.token) return;
+    let localCommitPendingSync = false;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -363,6 +399,7 @@ export default function App() {
           name: auth.login ?? "GitHub User",
           email: `${auth.login ?? "user"}@users.noreply.github.com`,
         }, (evt) => suivreProgressionGit(evt, t.operationProgress.publishing));
+        localCommitPendingSync = true;
       }
       updateProgress({ percent: 45, label: t.operationProgress.publishing, complete: false });
       await mettreAJour({
@@ -370,13 +407,19 @@ export default function App() {
         token: auth.token,
         onProgress: (evt) => suivreProgressionGit(evt, t.operationProgress.publishing),
       });
+      localCommitPendingSync = false;
       updateProgress({ percent: 90, label: t.operationProgress.publishing, complete: false });
       await refreshProjectState(true);
       updateProgress({ percent: 98, label: t.operationProgress.publishing, complete: false });
       await afficherFinOperation(t.operationProgress.completed);
       setNotice(t.ui.syncCompleted);
     } catch (cause) {
-      setError(displayError(cause));
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(displayError(
+        localCommitPendingSync && /failed to fetch|network error|cannot contact|dns|timeout|connection reset/i.test(message)
+          ? new Error("SYNC_OFFLINE_LOCAL_COMMIT_SAVED")
+          : cause
+      ));
     } finally {
       setBusy(false);
       effacerProgression();
@@ -413,7 +456,7 @@ export default function App() {
       updateProgress({ percent: 22, label: t.operationProgress.publishing, complete: false });
       await associerDepotDistant(directory, remote.clone_url);
       updateProgress({ percent: 25, label: t.operationProgress.publishing, complete: false });
-      await ajouterEtCommiter(directory, lang === "fr" ? "Publication initiale" : lang === "es" ? "Publicación inicial" : "Initial commit", {
+      await ajouterEtCommiter(directory, commitMessage.trim() || (lang === "fr" ? "Publication initiale" : lang === "es" ? "Publicación inicial" : "Initial commit"), {
         name: auth.login ?? "GitHub User",
         email: `${auth.login ?? "user"}@users.noreply.github.com`,
       }, (evt) => suivreProgressionGit(evt, t.operationProgress.publishing));
@@ -489,10 +532,42 @@ export default function App() {
     { id: 1, label: t.steps.project, icon: FolderGit2 },
     { id: 2, label: t.steps.sensitive, icon: ShieldAlert },
     { id: 3, label: t.steps.sync, icon: RefreshCw },
-    { id: 4, label: t.steps.clone, icon: GitFork },
   ], [t]);
 
   const activeStep = step === 4 ? 4 : step;
+
+  const chargerDepotsGitHub = useCallback(async () => {
+    if (!auth.token) {
+      setCloneRepositories([]);
+      setCloneRepositoriesError(null);
+      return;
+    }
+    setCloneRepositoriesLoading(true);
+    setCloneRepositoriesError(null);
+    try {
+      setCloneRepositories(await listerDepots(auth.token));
+    } catch (cause) {
+      setCloneRepositoriesError(displayError(cause));
+    } finally {
+      setCloneRepositoriesLoading(false);
+    }
+  }, [auth.token, displayError]);
+
+  useEffect(() => {
+    if (step === 4) void chargerDepotsGitHub();
+  }, [chargerDepotsGitHub, step]);
+
+  function ouvrirAssistantPublication(mode: "create" | "update") {
+    setPublicationMode(mode);
+    setPublicationWizardOpen(true);
+    setError(null);
+  }
+
+  function terminerAssistantPublication() {
+    setPublicationWizardOpen(false);
+    if (publicationMode === "create") void createAndPublish();
+    else void publishChanges();
+  }
 
   return (
     <div className="app-shell min-h-screen bg-[#090909] text-slate-100">
@@ -506,17 +581,6 @@ export default function App() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
-            {directory && (
-              <button
-                type="button"
-                onClick={() => void chooseProjectFolder()}
-                disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-[#171717] px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-orange-500 hover:text-white disabled:opacity-50"
-              >
-                <FolderPlus size={14} />
-                <span className="hidden sm:inline">{t.ui.chooseAnotherFolder}</span>
-              </button>
-            )}
             <button
               type="button"
               onClick={() => setSettingsOpen(true)}
@@ -576,40 +640,69 @@ export default function App() {
       )}
 
       <nav className="border-b border-slate-800 bg-[#111111]">
-        <div className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-4">
-          {stepsList.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => {
-                setStep(id);
-                setError(null);
-              }}
-              className={`flex shrink-0 items-center gap-2 border-b-2 px-3 py-3 text-sm transition ${
-                activeStep === id
-                  ? "border-orange-500 bg-orange-950/40 text-white"
-                  : "border-transparent text-slate-400 hover:bg-slate-900 hover:text-slate-200"
-              }`}
-            >
-              <Icon size={16} />
-              <span>{id}. {label}</span>
-              {id === 1 && directory && <Check size={14} className="text-emerald-400" />}
-              {id === 2 && analysis?.sensitiveFiles.length ? (
-                <span className="rounded-full bg-amber-500/20 px-1.5 text-xs text-amber-300">
-                  {analysis.sensitiveFiles.length}
-                </span>
-              ) : null}
-            </button>
-          ))}
-          <div className="ml-auto hidden max-w-48 items-center truncate border-l border-slate-800 px-4 text-xs text-slate-400 lg:flex">
-            {directory ?? t.app.noProject}
-          </div>
+        <div className="mx-auto grid max-w-7xl gap-4 px-4 py-3 lg:grid-cols-[1fr_auto]">
+          <section aria-label={lang === "fr" ? "Gestion et suivi" : lang === "es" ? "Gestión y seguimiento" : "Management and tracking"}>
+            <p className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+              {lang === "fr" ? "Gestion & suivi" : lang === "es" ? "Gestión y seguimiento" : "Management & tracking"}
+            </p>
+            <div className="flex gap-1 overflow-x-auto">
+              {stepsList.map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => {
+                    setStep(id);
+                    setError(null);
+                  }}
+                  className={`flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition ${
+                    activeStep === id
+                      ? "bg-orange-950/50 text-white ring-1 ring-orange-700"
+                      : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
+                  }`}
+                >
+                  <Icon size={16} />
+                  <span>{id}. {label}</span>
+                  {id === 1 && directory && <Check size={14} className="text-emerald-400" />}
+                  {id === 2 && analysis?.sensitiveFiles.length ? (
+                    <span className="rounded-full bg-amber-500/20 px-1.5 text-xs text-amber-300">
+                      {analysis.sensitiveFiles.length}
+                    </span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          </section>
+          <section aria-label={lang === "fr" ? "Actions Git" : lang === "es" ? "Acciones de Git" : "Git actions"}>
+            <p className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+              {lang === "fr" ? "Actions Git" : lang === "es" ? "Acciones Git" : "Git actions"}
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => ouvrirAssistantPublication(repoState?.remoteUrl ? "update" : "create")}
+                disabled={!directory || busy}
+                className="inline-flex shrink-0 items-center gap-2 rounded-md border border-emerald-800 px-3 py-2 text-sm text-emerald-200 hover:bg-emerald-950/50 disabled:opacity-40"
+              >
+                <CloudUpload size={15} />
+                {lang === "fr" ? "Publier" : lang === "es" ? "Publicar" : "Publish"}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setStep(4); setError(null); }}
+                className={`inline-flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm ${activeStep === 4 ? "bg-orange-950/50 text-white ring-1 ring-orange-700" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"}`}
+              >
+                <GitFork size={15} />
+                {t.steps.clone}
+              </button>
+            </div>
+          </section>
         </div>
       </nav>
 
       <main className="mx-auto min-h-[calc(100vh-119px)] max-w-screen-2xl px-4 py-6 sm:px-6 sm:py-8">
         <div className="mb-6 flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-5">
-          <div>
+          <div className="flex w-full flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
             <h1 className="flex items-center gap-3 text-2xl font-semibold">
               {activeStep === 1 && <><FolderGit2 className="text-orange-400" />{t.headers.step1Title}</>}
               {activeStep === 2 && <><ShieldAlert className="text-amber-400" />{t.headers.step2Title}</>}
@@ -622,6 +715,7 @@ export default function App() {
               {activeStep === 3 && t.headers.step3Desc}
               {activeStep === 4 && t.headers.step4Desc}
             </p>
+            </div>
           </div>
         </div>
 
@@ -665,16 +759,27 @@ export default function App() {
             {directory && analysis && (
               <div className="rounded-xl border border-slate-800 bg-[#171717] p-5">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
-                  <div className="flex items-center gap-3">
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
                     <Folder size={22} className="text-slate-300" />
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="text-xs text-slate-400">{t.projectStep.selectedFolder} · {t.projectStep.localPathLabel}</p>
                       <p className="break-all font-mono text-sm">{directory}</p>
                     </div>
                   </div>
-                  <span className="shrink-0 text-sm text-slate-400">
-                    {analysis.type} · {analysis.fileCount} {t.projectStep.filesCount}
-                  </span>
+                  <div className="flex shrink-0 flex-wrap items-center gap-3">
+                    <span className="text-sm text-slate-400">
+                      {analysis.type} · {analysis.fileCount} {t.projectStep.filesCount}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void chooseProjectFolder()}
+                      disabled={busy}
+                      className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-[#171717] px-3 py-2 text-sm text-slate-200 hover:border-orange-500 hover:text-white disabled:opacity-50"
+                    >
+                      <FolderPlus size={15} />
+                      {t.ui.chooseAnotherFolder}
+                    </button>
+                  </div>
                 </div>
                 <ExplorateurFichiers directory={directory} files={projectFiles} lang={lang} />
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -813,35 +918,9 @@ export default function App() {
               <div className="rounded-xl border border-slate-800 bg-[#171717] p-5">
                 <h2 className="mb-2 font-semibold">{t.syncStep.firstPublishTitle}</h2>
                 <p className="mb-4 text-sm text-slate-400">{t.syncStep.firstPublishDesc}</p>
-                <div className="flex flex-wrap items-center gap-3">
-                  <input
-                    value={repoName}
-                    onChange={(event) => setRepoName(event.target.value)}
-                    placeholder={t.syncStep.repoNamePlaceholder}
-                    className="min-w-0 flex-1 rounded-md border border-slate-700 bg-[#090909] px-3 py-2 text-sm sm:max-w-xs"
-                  />
-                  <div className="flex overflow-hidden rounded-md border border-slate-700 text-sm" role="group" aria-label={t.ui.repositoryVisibility}>
-                    <button
-                      type="button"
-                      onClick={() => setPrivateRepo(true)}
-                      className={`flex items-center gap-1.5 px-3 py-2 transition-colors ${privateRepo ? "bg-orange-600 font-semibold text-white" : "bg-[#090909] text-slate-400 hover:text-slate-200"}`}
-                      aria-pressed={privateRepo}
-                    >
-                      🔒 {t.syncStep.privateRepoCheckbox}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPrivateRepo(false)}
-                      className={`flex items-center gap-1.5 border-l border-slate-700 px-3 py-2 transition-colors ${!privateRepo ? "bg-emerald-700 font-semibold text-white" : "bg-[#090909] text-slate-400 hover:text-slate-200"}`}
-                      aria-pressed={!privateRepo}
-                    >
-                      🌐 {t.syncStep.publicRepoLabel}
-                    </button>
-                  </div>
-                  <button type="button" onClick={() => void createAndPublish()} disabled={busy || !auth.token} className="rounded-md bg-emerald-700 px-4 py-2 font-semibold hover:bg-emerald-600 disabled:opacity-40">
-                    <CloudUpload size={15} className="mr-1 inline" />{t.syncStep.createAndPublishBtn}
-                  </button>
-                </div>
+                <button type="button" onClick={() => ouvrirAssistantPublication("create")} disabled={busy || !auth.token} className="rounded-md bg-emerald-700 px-4 py-2 font-semibold hover:bg-emerald-600 disabled:opacity-40">
+                  <CloudUpload size={15} className="mr-1 inline" />{t.syncStep.createAndPublishBtn}
+                </button>
               </div>
             ) : (
               <>
@@ -858,43 +937,41 @@ export default function App() {
                     color={repoState.changedFiles ? "amber" : "emerald"}
                   />
                 </div>
+                {repoState.conflictFiles.length > 0 && (
+                  <div role="alert" className="rounded-xl border border-amber-800 bg-amber-950/30 p-4">
+                    <p className="font-semibold text-amber-200">
+                      {lang === "fr" ? "Conflits Git à résoudre" : lang === "es" ? "Conflictos de Git por resolver" : "Git conflicts need attention"}
+                    </p>
+                    <p className="mt-1 text-sm text-amber-100/80">
+                      {lang === "fr"
+                        ? "Aucune version locale ou distante n’a été choisie automatiquement. Résolvez ces fichiers dans votre éditeur, puis resélectionnez le dossier dans la vue Projet."
+                        : lang === "es"
+                          ? "No se eligió automáticamente ninguna versión local o remota. Resuelve estos archivos en tu editor y vuelve a seleccionar la carpeta en la vista Proyecto."
+                          : "No local or remote version was chosen automatically. Resolve these files in your editor, then select the folder again in the Project view."}
+                    </p>
+                    <ul className="mt-3 max-h-32 space-y-1 overflow-auto font-mono text-xs text-amber-100">
+                      {repoState.conflictFiles.map((filepath) => <li key={filepath} className="break-all">{filepath}</li>)}
+                    </ul>
+                  </div>
+                )}
                 <div className="rounded-xl border border-slate-800 bg-[#171717] p-5">
                   <h2 className="font-semibold">{t.syncStep.actionsTitle}</h2>
                   <p className="mt-1 text-xs text-slate-400">{t.syncStep.actionsDesc}</p>
-                  <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-                    <input
-                      value={commitMessage}
-                      onChange={(event) => setCommitMessage(event.target.value)}
-                      aria-label={t.syncStep.commitMsgPlaceholder}
-                      placeholder={t.syncStep.commitMsgPlaceholder}
-                      className="min-w-0 flex-1 rounded-md border border-slate-700 bg-[#090909] px-3 py-2 text-sm"
-                    />
-                    <button type="button" onClick={() => void publishChanges()} disabled={busy || !auth.token} className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40">
-                      <CloudUpload size={15} className="mr-1 inline" />{t.syncStep.publishBtn}
-                    </button>
-                  </div>
+                  <button type="button" onClick={() => ouvrirAssistantPublication("update")} disabled={busy || !auth.token} className="mt-4 rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40">
+                    <CloudUpload size={15} className="mr-1 inline" />{t.syncStep.publishBtn}
+                  </button>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-[#171717] p-5">
                   <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">{t.syncStep.recentHistoryTitle}</h2>
                   {repoState.recentCommits.some((commit) => !hiddenCommits.includes(commit.oid)) ? (
-                    <ul className="space-y-3">
-                      {repoState.recentCommits.filter((commit) => !hiddenCommits.includes(commit.oid)).map((commit) => (
-                        <li key={commit.oid} className="flex min-w-0 items-start gap-3 text-sm">
-                          <code className="shrink-0 rounded border border-orange-900 bg-orange-950/40 px-2 py-0.5 text-xs text-orange-200">{commit.oid}</code>
-                          <span className="min-w-0 flex-1 truncate">{commit.message || t.syncStep.unnamedCommit}</span>
-                          <time className="hidden shrink-0 text-xs text-slate-500 sm:block">{new Date(commit.timestamp * 1000).toLocaleString(lang === "fr" ? "fr-FR" : lang === "es" ? "es-ES" : "en-US")}</time>
-                          <button
-                            type="button"
-                            onClick={() => setHiddenCommits((current) => [...current, commit.oid])}
-                            className="shrink-0 rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-white"
-                            aria-label={t.dialogs.hideCommit}
-                            title={t.dialogs.hideCommit}
-                          >
-                            <X size={14} />
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
+                    <CommitHistory
+                      commits={repoState.recentCommits}
+                      hiddenCommits={hiddenCommits}
+                      language={lang}
+                      unnamedLabel={t.syncStep.unnamedCommit}
+                      hideLabel={t.dialogs.hideCommit}
+                      onHide={(oid) => setHiddenCommits((current) => [...current, oid])}
+                    />
                   ) : <p className="text-sm text-slate-400">{t.syncStep.noCommits}</p>}
                   <p className="mt-3 text-xs text-slate-500">{t.ui.hiddenCommitNotice}</p>
                 </div>
@@ -912,8 +989,56 @@ export default function App() {
               </div>
               <span className="rounded-md border border-orange-900 bg-orange-950/30 px-2 py-1 text-xs text-orange-300">{t.cloneStep.badge}</span>
             </div>
-            <label htmlFor="clone-url" className="mb-1 block text-sm">{t.cloneStep.urlLabel}</label>
-            <input id="clone-url" value={cloneUrl} onChange={(event) => setCloneUrl(event.target.value)} placeholder={t.cloneStep.urlPlaceholder} className="mb-4 w-full rounded-md border border-slate-700 bg-[#090909] px-3 py-2 font-mono text-xs outline-none focus:border-orange-500" />
+            <div className="mb-4 flex items-end gap-2">
+              <label htmlFor="clone-repository" className="min-w-0 flex-1 text-sm">
+                <span className="mb-1 block">{lang === "fr" ? "Dépôts du compte GitHub" : lang === "es" ? "Repositorios de la cuenta de GitHub" : "Repositories from your GitHub account"}</span>
+                <select
+                  id="clone-repository"
+                  value={cloneRepositories.some((repository) => repository.url === cloneUrl) ? cloneUrl : ""}
+                  onChange={(event) => setCloneUrl(event.target.value)}
+                  disabled={!auth.token || cloneRepositoriesLoading}
+                  className="w-full rounded-md border border-slate-700 bg-[#090909] px-3 py-2 text-sm disabled:opacity-50"
+                >
+                  <option value="">
+                    {cloneRepositoriesLoading
+                      ? (lang === "fr" ? "Chargement des dépôts…" : lang === "es" ? "Cargando repositorios…" : "Loading repositories…")
+                      : lang === "fr" ? "Sélectionner un dépôt…" : lang === "es" ? "Seleccionar un repositorio…" : "Select a repository…"}
+                  </option>
+                  {cloneRepositories.map((repository) => (
+                    <option key={repository.url} value={repository.url}>
+                      {repository.cheminComplet} · {repository.prive ? t.syncStep.privateRepoCheckbox : t.syncStep.publicRepoLabel}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={() => void chargerDepotsGitHub()}
+                disabled={!auth.token || cloneRepositoriesLoading}
+                className="shrink-0 rounded-md border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-40"
+              >
+                {lang === "fr" ? "Actualiser" : lang === "es" ? "Actualizar" : "Refresh"}
+              </button>
+            </div>
+            {cloneRepositoriesError && (
+              <p role="alert" className="mb-4 rounded-md border border-red-900 bg-red-950/30 p-3 text-sm text-red-200">{cloneRepositoriesError}</p>
+            )}
+            {auth.token && !cloneRepositoriesLoading && !cloneRepositoriesError && cloneRepositories.length === 0 && (
+              <p className="mb-4 rounded-md border border-slate-700 bg-slate-900/50 p-3 text-sm text-slate-300">
+                {lang === "fr" ? "Aucun dépôt accessible n’a été trouvé sur ce compte GitHub."
+                  : lang === "es" ? "No se encontraron repositorios accesibles en esta cuenta de GitHub."
+                    : "No accessible repositories were found for this GitHub account."}
+              </p>
+            )}
+            {!auth.token && (
+              <p className="mb-4 rounded-md border border-amber-900 bg-amber-950/20 p-3 text-sm text-amber-200">
+                {lang === "fr"
+                  ? "Connecte-toi à GitHub pour afficher tes dépôts privés et ceux de ton compte. Tu peux aussi entrer l’URL d’un dépôt public."
+                  : lang === "es"
+                    ? "Conéctate a GitHub para ver tus repositorios privados y los de tu cuenta. También puedes introducir la URL de un repositorio público."
+                    : "Sign in to GitHub to see your private and account repositories. You can also enter a public repository URL."}
+              </p>
+            )}
             <label className="mb-1 block text-sm">{t.cloneStep.parentLabel}</label>
             <div className="mb-4 flex gap-2">
               <input value={cloneParent} readOnly placeholder={t.cloneStep.parentPlaceholder} className="min-w-0 flex-1 rounded-md border border-slate-700 bg-[#090909] px-3 py-2 font-mono text-xs" />
@@ -926,7 +1051,7 @@ export default function App() {
             </div>
             <div className="mt-5 flex items-center justify-between">
               <button type="button" onClick={() => setStep(1)} className="rounded-md bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700">{t.cloneStep.cancelBtn}</button>
-              <button type="button" onClick={() => void cloneRepository()} disabled={busy} className="rounded-md bg-orange-600 px-4 py-2.5 text-sm font-semibold hover:bg-orange-500 disabled:opacity-40">
+              <button type="button" onClick={() => void cloneRepository()} disabled={busy || !auth.token || !cloneRepositories.some((repository) => repository.url === cloneUrl)} className="rounded-md bg-orange-600 px-4 py-2.5 text-sm font-semibold hover:bg-orange-500 disabled:opacity-40">
                 <CloudDownload size={15} className="mr-2 inline" />{t.cloneStep.cloneBtn}
               </button>
             </div>
@@ -936,6 +1061,26 @@ export default function App() {
         {busy && progress && <ProgressOverlay progress={progress} completedLabel={t.operationProgress.completed} />}
         {busy && !progress && <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/70 p-4" role="status" aria-live="polite"><LoaderCircle className="animate-spin text-orange-400" size={36} /></div>}
       </main>
+
+        <PublicationWizard
+          open={publicationWizardOpen}
+          language={lang}
+          mode={publicationMode}
+          directory={directory ?? ""}
+          remoteUrl={repoState?.remoteUrl ?? null}
+          branch={repoState?.branch ?? "main"}
+          changedFiles={repoState?.changedFiles ?? projectFiles.length}
+          sensitiveFiles={[...new Set([...(analysis?.sensitiveFiles ?? []), ...trackedSensitive])]}
+          repoName={repoName}
+          privateRepo={privateRepo}
+          commitMessage={commitMessage}
+          busy={busy}
+          onRepoNameChange={setRepoName}
+          onPrivateRepoChange={setPrivateRepo}
+          onCommitMessageChange={setCommitMessage}
+          onClose={() => setPublicationWizardOpen(false)}
+          onFinish={terminerAssistantPublication}
+        />
 
         <SettingsModal
           open={settingsOpen}

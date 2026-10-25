@@ -11,11 +11,14 @@ interface Props {
 }
 
 export function ProgressOverlay({ progress, completedLabel }: Props) {
-  const target = useRef(progress.percent);
   const current = useRef(progress.percent);
+  const requestedProgress = useRef(progress.percent);
+  const isComplete = useRef(progress.complete);
+  const startedAt = useRef<number | null>(null);
   const [displayed, setDisplayed] = useState(progress.percent);
 
-  target.current = progress.percent;
+  requestedProgress.current = progress.percent;
+  isComplete.current = progress.complete;
 
   useEffect(() => {
     let frame = 0;
@@ -23,13 +26,19 @@ export function ProgressOverlay({ progress, completedLabel }: Props) {
     let lastDisplayed = Math.round(current.current);
 
     const animate = (now: number) => {
+      startedAt.current ??= now;
       const elapsed = previousTime ? Math.min(now - previousTime, 50) : 16;
       previousTime = now;
-      const remaining = target.current - current.current;
+      const operationElapsed = now - startedAt.current;
+      const estimatedProgress = 94 * (1 - Math.exp(-operationElapsed / 25000));
+      const target = isComplete.current
+        ? 100
+        : Math.min(95, Math.max(requestedProgress.current, estimatedProgress));
+      const remaining = target - current.current;
       if (Math.abs(remaining) < 0.05) {
-        current.current = target.current;
+        current.current = target;
       } else {
-        current.current += remaining * Math.min(1, elapsed / 240);
+        current.current += remaining * Math.min(1, elapsed / 300);
       }
       const value = Math.round(current.current);
       if (value !== lastDisplayed) {
@@ -43,7 +52,7 @@ export function ProgressOverlay({ progress, completedLabel }: Props) {
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
-  const value = progress.complete ? 100 : Math.min(95, displayed);
+  const value = Math.min(100, displayed);
 
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/70 p-4" role="status" aria-live="polite">

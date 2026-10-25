@@ -563,6 +563,23 @@ export function translateError(error: unknown, lang: Language): string {
   const spanish = lang === "es";
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
 
+  if (message === "SYNC_OFFLINE_LOCAL_COMMIT_SAVED") {
+    return french
+      ? "Pas de connexion réseau : votre commit est enregistré dans le dépôt local. Reconnectez-vous à Internet puis relancez la synchronisation."
+      : spanish
+        ? "Sin conexión de red: el commit está guardado en el repositorio local. Vuelve a conectarte y reanuda la sincronización."
+        : "You are offline: your commit is saved in the local repository. Reconnect and retry synchronization.";
+  }
+  if (message.startsWith("GITHUB_FILE_TOO_LARGE:")) {
+    const files = message.slice("GITHUB_FILE_TOO_LARGE:".length).split("|").filter(Boolean);
+    const names = files.join(", ");
+    return french
+      ? `Publication bloquée : ces fichiers dépassent la limite GitHub de 100 Mio : ${names}. Retirez-les du commit ou utilisez Git LFS, puis réessayez.`
+      : spanish
+        ? `Publicación bloqueada: estos archivos superan el límite de GitHub de 100 MiB: ${names}. Retíralos del commit o usa Git LFS y vuelve a intentarlo.`
+        : `Publishing blocked: these files exceed GitHub's 100 MiB limit: ${names}. Remove them from the commit or use Git LFS, then retry.`;
+  }
+
   if (/multiple references|multiple ref|refspec|ambiguous ref/i.test(message)) {
     return french
       ? "La branche distante est ambiguë. Vérifiez son nom et réessayez ; aucune réécriture de l’historique ne sera effectuée."
@@ -625,6 +642,13 @@ export function translateError(error: unknown, lang: Language): string {
       : spanish
         ? "No se puede actualizar en avance rápido porque los historiales divergen. Revisa los cambios de GitHub antes de volver a intentarlo."
         : "A fast-forward update is not possible because the histories have diverged. Review the GitHub changes before retrying.";
+  }
+  if (/conflict|unmerged|needs merge|merge failed/i.test(message)) {
+    return french
+      ? "Des fichiers sont en conflit. Aucun choix local ou distant n’a été appliqué automatiquement : examinez les fichiers concernés, résolvez-les, puis relancez la synchronisation."
+      : spanish
+        ? "Hay archivos en conflicto. No se aplicó automáticamente ninguna versión local o remota: revisa y resuelve los archivos antes de sincronizar de nuevo."
+        : "Some files are in conflict. No local or remote version was chosen automatically; review and resolve the files before retrying synchronization.";
   }
   if (/message du commit ne peut pas être vide|commit message cannot be empty/i.test(message)) {
     return french ? "Le message du commit ne peut pas être vide."

@@ -91,6 +91,14 @@ export async function creerOuRecupererDepot(
 
 export async function listerDepots(token: string): Promise<DepotGitHub[]> {
   const octokit = creerClientGitHub(token);
-  const { data } = await octokit.repos.listForAuthenticatedUser({ sort: "updated" });
-  return data.map((r) => ({ nom: r.name, url: r.clone_url ?? "", prive: r.private ?? false }));
+  const repositories = await octokit.paginate(octokit.repos.listForAuthenticatedUser, {
+    sort: "updated",
+    per_page: 100,
+  });
+  return repositories.map((repository) => ({
+    nom: repository.name,
+    cheminComplet: `${repository.owner?.login ?? ""}/${repository.name}`,
+    url: repository.clone_url ?? "",
+    prive: repository.private ?? false,
+  }));
 }

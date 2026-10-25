@@ -38,6 +38,7 @@ export interface EtatConnexion {
 
 export interface DepotGitHub {
   nom: string;
+  cheminComplet: string;
   url: string;
   prive: boolean;
 }

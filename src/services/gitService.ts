@@ -3,7 +3,7 @@ import { dirname, join } from "@tauri-apps/api/path";
 import { creerHttpGitHub, tauriGitHttp } from "./tauriGitHttp";
 import { estLienSymbolique, tauriFsBridge as fs } from "./tauriFsBridge";
 import { isSensitivePath } from "./projectAnalyzer";
-import { listerCheminsRelatifs } from "./fileSystemUtils";
+import { listerCheminsRelatifs, yieldToUi } from "./fileSystemUtils";
 import type { ProgressionGit } from "../types";
 
 interface OperationDistante {
@@ -17,6 +17,7 @@ export interface EtatDepot {
   branch: string;
   remoteUrl: string | null;
   changedFiles: number;
+  conflictFiles: string[];
   recentCommits: { oid: string; message: string; timestamp: number }[];
 }
 
@@ -41,6 +42,7 @@ const DOSSIERS_GENERES = new Set([
   "node_modules", "dist", "target", "build", ".next", ".cache", "coverage",
   ".venv", "venv", "vendor", ".godot", ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
 ]);
+const TAILLE_MAX_GITHUB = 100 * 1024 * 1024;
 
 function estCheminGenere(filepath: string): boolean {
   return filepath.split("/").some((segment) => DOSSIERS_GENERES.has(segment));
@@ -80,6 +82,7 @@ async function obtenirStatutsFichiers(
       loaded: Math.min(index + batch.length, candidates.length),
       total: candidates.length,
     });
+    if (index + parallelisme < candidates.length) await yieldToUi();
   }
 
   return statuses;
@@ -193,7 +196,7 @@ export async function obtenirEtatDepot(dir: string): Promise<EtatDepot> {
   ]);
   const [statuses, commits, filesWithoutCommit] = await Promise.all([
     hasCommit ? obtenirStatutsFichiers(dir) : Promise.resolve([]),
-    hasCommit ? git.log({ fs, dir, depth: 5 }) : Promise.resolve([]),
+    hasCommit ? git.log({ fs, dir, depth: 100 }) : Promise.resolve([]),
     hasCommit ? Promise.resolve([]) : listerCheminsRelatifs(dir),
   ]);
 
@@ -203,6 +206,9 @@ export async function obtenirEtatDepot(dir: string): Promise<EtatDepot> {
     changedFiles: hasCommit
       ? statuses.filter(([, status]) => !["unmodified", "ignored", "absent"].includes(status)).length
       : filesWithoutCommit.length,
+    conflictFiles: statuses
+      .filter(([, status]) => /conflict|unmerged/i.test(status))
+      .map(([filepath]) => filepath),
     recentCommits: commits.map(({ oid, commit }) => ({
       oid: oid.slice(0, 7),
       message: commit.message.split("\n", 1)[0],
@@ -237,6 +243,25 @@ async function verifierAucunFichierSensible(dir: string): Promise<void> {
     throw new Error(
       `Opération bloquée : des fichiers potentiellement sensibles sont suivis, modifiés ou prêts à être ajoutés : ${files.join(", ")}. Retire-les de l’index et vérifie leur historique avant de publier.`
     );
+  }
+}
+
+async function verifierTailleFichiersGitHub(dir: string): Promise<void> {
+  const files = (await listerCheminsRelatifs(dir)).filter((filepath) => filepath !== ".git");
+  const tropVolumineux: string[] = [];
+  for (let index = 0; index < files.length; index += 1) {
+    const filepath = files[index];
+    const status = await git.status({ fs, dir, filepath });
+    if (status === "ignored" || status === "absent") continue;
+    const info = await fs.promises.stat(await join(dir, filepath));
+    if (info.isFile() && info.size > TAILLE_MAX_GITHUB) {
+      tropVolumineux.push(filepath);
+      if (tropVolumineux.length === 5) break;
+    }
+    if ((index + 1) % 64 === 0) await yieldToUi();
+  }
+  if (tropVolumineux.length > 0) {
+    throw new Error(`GITHUB_FILE_TOO_LARGE:${tropVolumineux.join("|")}`);
   }
 }
 
@@ -291,6 +316,7 @@ async function ajouterTousLesFichiers(
         await git.add({ fs, dir, filepath });
       }
       onProgress?.({ phase: "add", loaded: index + 1, total: files.length });
+      if ((index + 1) % 32 === 0) await yieldToUi();
     }
     return;
   }
@@ -303,6 +329,7 @@ async function ajouterTousLesFichiers(
       await git.add({ fs, dir, filepath });
     }
     onProgress?.({ phase: "add", loaded: index + 1, total: statuses.length });
+    if ((index + 1) % 32 === 0) await yieldToUi();
   }
 }
 
@@ -318,6 +345,7 @@ export async function ajouterEtCommiter(
   const identity = await garantirIdentiteGit(dir, author);
   await preparerGitignore(dir, "");
   await verifierAucunFichierSensible(dir);
+  await verifierTailleFichiersGitHub(dir);
   await ajouterTousLesFichiers(dir, onProgress);
   await verifierAucunFichierSensible(dir);
   onProgress?.({ phase: "commit", loaded: 0, total: 1 });
@@ -367,6 +395,7 @@ export async function publier({
   if (!token.trim()) throw new Error("Connecte-toi à GitHub avant de publier.");
   const http = creerHttpGitHub(token);
   await verifierAucunFichierSensible(dir);
+  await verifierTailleFichiersGitHub(dir);
   const configuredRemote = await obtenirUrlDistante(dir);
   if (!configuredRemote) {
     throw new Error("Aucun dépôt distant n’est associé à ce projet.");

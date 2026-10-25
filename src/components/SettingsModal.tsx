@@ -40,34 +40,35 @@ export function SettingsModal({
   const settings = language === "fr" ? {
     title: "Paramètres", language: "Langue", theme: "Thème", dark: "Sombre", light: "Clair",
     accent: "Couleur d’accentuation", presets: "Thèmes disponibles", export: "Télécharger le thème",
-    import: "Importer un thème JSON", close: "Fermer", invalid: "Fichier de thème invalide.",
+    downloadPreset: "Télécharger ce thème", import: "Importer un thème JSON", close: "Fermer", invalid: "Fichier de thème invalide.",
   } : language === "es" ? {
     title: "Ajustes", language: "Idioma", theme: "Tema", dark: "Oscuro", light: "Claro",
     accent: "Color de énfasis", presets: "Temas disponibles", export: "Descargar tema",
-    import: "Importar tema JSON", close: "Cerrar", invalid: "El archivo de tema no es válido.",
+    downloadPreset: "Descargar este tema", import: "Importar tema JSON", close: "Cerrar", invalid: "El archivo de tema no es válido.",
   } : {
     title: "Settings", language: "Language", theme: "Theme", dark: "Dark", light: "Light",
     accent: "Accent color", presets: "Available themes", export: "Download theme",
-    import: "Import theme JSON", close: "Close", invalid: "Invalid theme file.",
+    downloadPreset: "Download this theme", import: "Import theme JSON", close: "Close", invalid: "Invalid theme file.",
   };
 
   if (!open) return null;
 
-  function downloadTheme() {
-    const preset = PRESETS.find((item) => item.theme === theme && item.accent === accent);
+  function downloadTheme(themeToDownload = theme, accentToDownload = accent, name?: string) {
     const blob = new Blob([JSON.stringify({
       format: "gsimplifie-theme",
       version: 1,
-      name: preset?.name ?? "Custom theme",
-      theme,
-      accent,
+      name: name ?? PRESETS.find((item) => item.theme === themeToDownload && item.accent === accentToDownload)?.name ?? "Custom theme",
+      theme: themeToDownload,
+      accent: accentToDownload,
     }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `gsimplifie-${theme}-${accent}.json`;
+    anchor.download = `gsimplifie-${themeToDownload}-${accentToDownload}.json`;
+    document.body.appendChild(anchor);
     anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   async function importTheme(file: File | undefined) {
@@ -130,14 +131,25 @@ export function SettingsModal({
             <legend className="mb-2 text-sm font-medium">{settings.presets}</legend>
             <div className="grid grid-cols-2 gap-2">
               {PRESETS.map((preset) => (
-                <button key={`${preset.theme}-${preset.accent}`} type="button" onClick={() => { onThemeChange(preset.theme); onAccentChange(preset.accent); }} className="rounded-md border border-slate-700 px-3 py-2 text-left text-xs hover:border-slate-500">
-                  {language === "fr" ? preset.nameFr : preset.name}
-                </button>
+                <div key={`${preset.theme}-${preset.accent}`} className="flex min-w-0 overflow-hidden rounded-md border border-slate-700">
+                  <button type="button" onClick={() => { onThemeChange(preset.theme); onAccentChange(preset.accent); }} className="min-w-0 flex-1 px-3 py-2 text-left text-xs hover:border-slate-500 hover:bg-slate-800">
+                    {language === "fr" ? preset.nameFr : preset.name}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => downloadTheme(preset.theme, preset.accent, preset.name)}
+                    aria-label={`${settings.downloadPreset}: ${language === "fr" ? preset.nameFr : preset.name}`}
+                    title={settings.downloadPreset}
+                    className="shrink-0 border-l border-slate-700 px-2 text-slate-400 hover:bg-slate-800 hover:text-white"
+                  >
+                    <Download size={14} />
+                  </button>
+                </div>
               ))}
             </div>
           </fieldset>
           <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-4">
-            <button type="button" onClick={downloadTheme} className="inline-flex items-center gap-2 rounded-md border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800"><Download size={15} />{settings.export}</button>
+            <button type="button" onClick={() => downloadTheme()} className="inline-flex items-center gap-2 rounded-md border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800"><Download size={15} />{settings.export}</button>
             <button type="button" onClick={() => fileInput.current?.click()} className="inline-flex items-center gap-2 rounded-md border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800"><Upload size={15} />{settings.import}</button>
             <input ref={fileInput} type="file" accept=".json,application/json" className="hidden" onChange={(event) => void importTheme(event.target.files?.[0])} />
           </div>

@@ -1,4 +1,5 @@
 import type { AnalyseProjet, TypeProjet } from "../types";
+import { yieldToUi } from "./fileSystemUtils";
 
 /**
  * Analyse un dossier réel déposé par l'utilisateur pour :
@@ -49,18 +50,25 @@ export function isSensitivePath(filepath: string): boolean {
 
 export async function analyzeProject(chemins: string[]): Promise<AnalyseProjet> {
   const hasExistingGit = chemins.includes(".git");
-
-  const detected = PROJECT_SIGNATURES.find((sig) =>
-    sig.files.some((needle) => chemins.some((p) => p.endsWith(needle)))
+  const nomsFichiers = new Set<string>();
+  const sensitiveFiles: string[] = [];
+  let fileCount = 0;
+  for (let index = 0; index < chemins.length; index += 1) {
+    const chemin = chemins[index];
+    nomsFichiers.add(chemin.split("/").pop() ?? chemin);
+    if (chemin !== ".git") fileCount += 1;
+    if (isSensitivePath(chemin)) sensitiveFiles.push(chemin);
+    if ((index + 1) % 512 === 0) await yieldToUi();
+  }
+  const detected = PROJECT_SIGNATURES.find((signature) =>
+    signature.files.some((filename) => nomsFichiers.has(filename))
   );
-
-  const sensitiveFiles = chemins.filter(isSensitivePath);
 
   return {
     type: detected?.type ?? "inconnu",
     suggestedGitignore: detected?.gitignore ?? "",
     hasExistingGit,
     sensitiveFiles,
-    fileCount: chemins.filter((chemin) => chemin !== ".git").length,
+    fileCount,
   };
 }
