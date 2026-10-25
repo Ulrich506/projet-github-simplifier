@@ -3,7 +3,7 @@ import { FolderPlus, UploadCloud } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDirectory } from "@tauri-apps/plugin-dialog";
 
-import { getTranslations, type Language } from "../i18n";
+import { getTranslations, translateError, type Language } from "../i18n";
 
 interface Props {
   onFolderSelected: (path: string) => void;
@@ -23,7 +23,7 @@ export function ZoneDepot({ onFolderSelected, erreur, disabled = false, onError,
       const path = await openDirectory({ directory: true, multiple: false });
       if (typeof path === "string" && !disabled) onFolderSelected(path);
     } catch (error) {
-      onError(error instanceof Error ? error.message : t.dialogError);
+      onError(translateError(error, lang));
     }
   }
 

@@ -37,8 +37,7 @@ export function SettingsModal({
 }: Props) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
-  const fr = language === "fr";
-  const settings = fr ? {
+  const settings = language === "fr" ? {
     title: "Paramètres", language: "Langue", theme: "Thème", dark: "Sombre", light: "Clair",
     accent: "Couleur d’accentuation", presets: "Thèmes disponibles", export: "Télécharger le thème",
     import: "Importer un thème JSON", close: "Fermer", invalid: "Fichier de thème invalide.",
@@ -46,10 +45,6 @@ export function SettingsModal({
     title: "Ajustes", language: "Idioma", theme: "Tema", dark: "Oscuro", light: "Claro",
     accent: "Color de énfasis", presets: "Temas disponibles", export: "Descargar tema",
     import: "Importar tema JSON", close: "Cerrar", invalid: "El archivo de tema no es válido.",
-  } : language === "ar" ? {
-    title: "الإعدادات", language: "اللغة", theme: "السمة", dark: "داكن", light: "فاتح",
-    accent: "لون التمييز", presets: "السمات المتاحة", export: "تنزيل السمة",
-    import: "استيراد سمة JSON", close: "إغلاق", invalid: "ملف السمة غير صالح.",
   } : {
     title: "Settings", language: "Language", theme: "Theme", dark: "Dark", light: "Light",
     accent: "Accent color", presets: "Available themes", export: "Download theme",
@@ -107,11 +102,10 @@ export function SettingsModal({
         <div className="space-y-5">
           <label className="block text-sm">
             <span className="mb-2 block font-medium">{settings.language}</span>
-            <select value={language} onChange={(event) => onLanguageChange(event.target.value as Language)} className="w-full rounded-md border border-slate-700 bg-[#090909] px-3 py-2">
+            <select value={language} onChange={(event) => onLanguageChange(event.target.value as Language)} className="w-full rounded-md border border-white bg-black px-3 py-2 text-white focus:border-white focus:outline-none focus:ring-1 focus:ring-white" style={{ colorScheme: "dark" }}>
               <option value="fr">Français</option>
               <option value="en">English</option>
               <option value="es">Español</option>
-              <option value="ar">العربية</option>
             </select>
           </label>
           <fieldset>
@@ -137,7 +131,7 @@ export function SettingsModal({
             <div className="grid grid-cols-2 gap-2">
               {PRESETS.map((preset) => (
                 <button key={`${preset.theme}-${preset.accent}`} type="button" onClick={() => { onThemeChange(preset.theme); onAccentChange(preset.accent); }} className="rounded-md border border-slate-700 px-3 py-2 text-left text-xs hover:border-slate-500">
-                  {fr ? preset.nameFr : preset.name}
+                  {language === "fr" ? preset.nameFr : preset.name}
                 </button>
               ))}
             </div>

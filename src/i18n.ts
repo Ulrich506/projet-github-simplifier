@@ -1,5 +1,5 @@
 
-export type Language = "fr" | "en" | "es" | "ar";
+export type Language = "fr" | "en" | "es";
 
 export interface Translations {
   app: {
@@ -136,6 +136,31 @@ export interface Translations {
     publishing: string;
     cloning: string;
     completed: string;
+  };
+  ui: {
+    settings: string;
+    reconnectAccount: string;
+    chooseAnotherFolder: string;
+    reauthorizeFolder: string;
+    repositoryVisibility: string;
+    accountsTitle: string;
+    hiddenCommitNotice: string;
+    forgetAccount: (login: string) => string;
+    addAccount: string;
+    preferencesSaveError: string;
+    remoteUrlInvalid: string;
+    replaceRemoteConfirm: string;
+    remoteLinked: string;
+    cannotUntrack: (filepath: string) => string;
+    sensitiveExcluded: (filepath: string) => string;
+    sensitiveFilesTracked: (files: string[]) => string;
+    linkRemoteFirst: string;
+    remoteAlreadyLinked: string;
+    repositoryNameRequired: string;
+    syncCompleted: string;
+    publishSuccess: (url: string) => string;
+    cloneInputRequired: string;
+    cloneSuccess: (path: string) => string;
   };
 }
 
@@ -276,6 +301,31 @@ export const translations: Record<"fr" | "en", Translations> = {
       cloning: "Clonage du dépôt depuis GitHub…",
       completed: "Terminé",
     },
+    ui: {
+      settings: "Paramètres",
+      reconnectAccount: "Reconnecter le compte",
+      chooseAnotherFolder: "Choisir un autre dossier",
+      reauthorizeFolder: "Réautoriser le dossier",
+      repositoryVisibility: "Visibilité du dépôt",
+      accountsTitle: "Comptes GitHub enregistrés",
+      hiddenCommitNotice: "Masquer un élément ne supprime pas le commit Git.",
+      forgetAccount: (login) => `Oublier ${login}`,
+      addAccount: "Ajouter / connecter un autre compte",
+      preferencesSaveError: "Les préférences ne peuvent pas être enregistrées sur cet appareil.",
+      remoteUrlInvalid: "Entre une URL HTTPS GitHub valide, par exemple https://github.com/compte/projet.git.",
+      replaceRemoteConfirm: "Cette action remplacera l’URL du dépôt distant actuel. Clique à nouveau pour confirmer.",
+      remoteLinked: "Le dépôt distant est associé à ce dossier.",
+      cannotUntrack: (filepath) => `Impossible de retirer ${filepath} de l’index Git.`,
+      sensitiveExcluded: (filepath) => `${filepath} est exclu des prochains commits. Son historique Git existant n’est pas effacé.`,
+      sensitiveFilesTracked: (files) => `Publication bloquée : ces fichiers sensibles sont encore suivis par Git : ${files.join(", ")}.`,
+      linkRemoteFirst: "Associe d’abord un dépôt GitHub à ce projet.",
+      remoteAlreadyLinked: "Un dépôt distant est déjà associé. Utilise le bouton « Mettre à jour le projet » ou confirme son remplacement dans l’étape Projet.",
+      repositoryNameRequired: "Indique un nom de dépôt.",
+      syncCompleted: "Synchronisation terminée sans forcer l’historique distant.",
+      publishSuccess: (url) => `Dépôt publié avec succès : ${url}`,
+      cloneInputRequired: "Renseigne une URL GitHub valide et choisis un dossier parent.",
+      cloneSuccess: (path) => `Dépôt cloné dans ${path}`,
+    },
   },
   en: {
     app: {
@@ -413,16 +463,42 @@ export const translations: Record<"fr" | "en", Translations> = {
       cloning: "Cloning repository from GitHub…",
       completed: "Completed",
     },
+    ui: {
+      settings: "Settings",
+      reconnectAccount: "Reconnect account",
+      chooseAnotherFolder: "Choose another folder",
+      reauthorizeFolder: "Re-authorize folder",
+      repositoryVisibility: "Repository visibility",
+      accountsTitle: "Saved GitHub accounts",
+      hiddenCommitNotice: "Hiding an item does not delete the Git commit.",
+      forgetAccount: (login) => `Forget ${login}`,
+      addAccount: "Add / sign in to another account",
+      preferencesSaveError: "Preferences could not be saved on this device.",
+      remoteUrlInvalid: "Enter a valid GitHub HTTPS URL, for example https://github.com/account/project.git.",
+      replaceRemoteConfirm: "This will replace the current remote URL. Click again to confirm.",
+      remoteLinked: "The remote repository is linked to this folder.",
+      cannotUntrack: (filepath) => `Could not remove ${filepath} from the Git index.`,
+      sensitiveExcluded: (filepath) => `${filepath} is excluded from future commits. Its existing Git history is unchanged.`,
+      sensitiveFilesTracked: (files) => `Publishing blocked: these sensitive files are still tracked by Git: ${files.join(", ")}.`,
+      linkRemoteFirst: "Link a GitHub repository to this project first.",
+      remoteAlreadyLinked: "A remote repository is already linked. Use “Update project” or confirm its replacement in the Project step.",
+      repositoryNameRequired: "Enter a repository name.",
+      syncCompleted: "Sync completed without forcing remote history.",
+      publishSuccess: (url) => `Repository published successfully: ${url}`,
+      cloneInputRequired: "Enter a valid GitHub URL and choose a parent folder.",
+      cloneSuccess: (path) => `Repository cloned into ${path}`,
+    },
   },
 };
 
 export function getTranslations(lang: Language): Translations {
   if (lang === "fr") return translations.fr;
   const english = translations.en;
+  if (lang === "en") return english;
   if (lang === "es") {
     return {
       ...english,
-      app: { ...english.app, title: "Gsimplifie", subtitle: "Sincroniza proyectos sin usar la terminal", connectGitHub: "Conectar GitHub", connecting: "Conectando…", disconnect: "Cerrar sesión", noProject: "Ningún proyecto seleccionado" },
+      app: { ...english.app, title: "Gsimplifie", subtitle: "Sincroniza proyectos sin usar la terminal", connectedAs: "conectado", connectGitHub: "Conectar GitHub", connecting: "Conectando…", disconnect: "Cerrar sesión", language: "Idioma", noProject: "Ningún proyecto seleccionado" },
       steps: { project: "Proyecto", sensitive: "Archivos sensibles", sync: "Sincronización", clone: "Clonar repositorio" },
       headers: { ...english.headers, step1Title: "Seleccionar proyecto", step1Desc: "Elige una carpeta local para analizar o sincronizar.", step2Title: "Revisión de seguridad", step2Desc: "Revisa los archivos sensibles antes de publicarlos.", step3Title: "Sincronizar proyecto", step3Desc: "Actualiza el repositorio sin sobrescribir su historial.", step4Title: "Clonar repositorio", step4Desc: "Clona en una carpeta nueva sin sobrescribir archivos.", badgeLinked: "Repositorio vinculado", badgeGit: "Git detectado", badgeFolder: "Carpeta seleccionada" },
       zoneDepot: { ...english.zoneDepot, titleDefault: "Arrastra aquí una carpeta de proyecto", titleUpdate: "Suelta aquí el proyecto que quieres actualizar", subtitle: "Las dependencias y carpetas de compilación se omiten automáticamente.", browseBtn: "Elegir carpeta", dialogError: "No se pudo abrir el selector de carpetas." },
@@ -433,22 +509,49 @@ export function getTranslations(lang: Language): Translations {
       common: { ...english.common, loading: "Cargando…", analyzingFolder: "Analizando carpeta…", inProgress: "Operación en curso…", close: "Cerrar", dismiss: "Ocultar" },
       dialogs: { ...english.dialogs, disconnectTitle: "¿Cerrar sesión de GitHub?", disconnectDescription: "Se cerrará la sesión activa. La cuenta se conservará para volver a conectarte rápidamente.", confirmDisconnect: "Cerrar sesión", cancel: "Cancelar", hideCommit: "Ocultar este commit" },
       operationProgress: { publishing: "Publicando en GitHub…", cloning: "Clonando desde GitHub…", completed: "Completado" },
+      authModal: {
+        title: "Iniciar sesión en GitHub",
+        subtitle: "No necesitas una contraseña ni copiar un token.",
+        prepareBtn: "Preparando…",
+        startBtn: "Conectar con GitHub",
+        enterCodePrompt: "Introduce este código en GitHub:",
+        openGitHubBtn: "Abrir GitHub",
+        githubOpenedBtn: "GitHub abierto",
+        expiresIn: (minutes, seconds) => `El código caduca en ${minutes}:${seconds}.`,
+        expiredMsg: "El código ha caducado. Inicia sesión de nuevo para obtener otro.",
+        waitingBrowser: "Esperando la confirmación en el navegador…",
+        noVerificationUrl: "GitHub no proporcionó una URL de verificación.",
+        retryBtn: "Reintentar conexión",
+        browserError: "No se pudo abrir el navegador del sistema.",
+      },
+      ui: {
+        settings: "Ajustes",
+        reconnectAccount: "Volver a conectar la cuenta",
+        chooseAnotherFolder: "Elegir otra carpeta",
+        reauthorizeFolder: "Volver a autorizar la carpeta",
+        repositoryVisibility: "Visibilidad del repositorio",
+        accountsTitle: "Cuentas de GitHub guardadas",
+        hiddenCommitNotice: "Ocultar un elemento no elimina el commit de Git.",
+        forgetAccount: (login) => `Olvidar ${login}`,
+        addAccount: "Añadir o conectar otra cuenta",
+        preferencesSaveError: "No se pudieron guardar las preferencias en este dispositivo.",
+        remoteUrlInvalid: "Introduce una URL HTTPS válida de GitHub, por ejemplo: https://github.com/cuenta/proyecto.git.",
+        replaceRemoteConfirm: "Esta acción reemplazará la URL remota actual. Haz clic de nuevo para confirmar.",
+        remoteLinked: "El repositorio remoto está vinculado a esta carpeta.",
+        cannotUntrack: (filepath) => `No se pudo dejar de seguir ${filepath} en Git.`,
+        sensitiveExcluded: (filepath) => `${filepath} se excluirá de los próximos commits. No se elimina su historial de Git.`,
+        sensitiveFilesTracked: (files) => `Publicación bloqueada: Git todavía sigue estos archivos sensibles: ${files.join(", ")}.`,
+        linkRemoteFirst: "Vincula primero un repositorio de GitHub a este proyecto.",
+        remoteAlreadyLinked: "Ya hay un repositorio remoto vinculado. Usa «Actualizar proyecto» o confirma su reemplazo en la pestaña Proyecto.",
+        repositoryNameRequired: "Escribe un nombre para el repositorio.",
+        syncCompleted: "Sincronización completada sin forzar el historial remoto.",
+        publishSuccess: (url) => `Repositorio publicado correctamente: ${url}`,
+        cloneInputRequired: "Introduce una URL válida de GitHub y selecciona una carpeta contenedora.",
+        cloneSuccess: (path) => `Repositorio clonado en ${path}`,
+      },
     };
   }
-  return {
-    ...english,
-    app: { ...english.app, title: "Gsimplifie", subtitle: "مزامنة المشاريع دون استخدام سطر الأوامر", connectGitHub: "الاتصال بـ GitHub", connecting: "جارٍ الاتصال…", disconnect: "تسجيل الخروج", noProject: "لم يتم اختيار مشروع" },
-    steps: { project: "المشروع", sensitive: "ملفات حساسة", sync: "المزامنة", clone: "استنساخ مستودع" },
-    headers: { ...english.headers, step1Title: "اختيار مشروع", step1Desc: "اختر مجلدًا محليًا لتحليله أو مزامنته.", step2Title: "فحص الأمان", step2Desc: "راجع الملفات الحساسة قبل نشرها.", step3Title: "مزامنة المشروع", step3Desc: "حدّث المستودع دون استبدال سجله.", step4Title: "استنساخ مستودع", step4Desc: "استنسخ إلى مجلد جديد دون استبدال الملفات.", badgeLinked: "مستودع مرتبط", badgeGit: "تم اكتشاف Git", badgeFolder: "تم اختيار المجلد" },
-    zoneDepot: { ...english.zoneDepot, titleDefault: "اسحب مجلد المشروع وأفلته هنا", titleUpdate: "أفلت المشروع المراد تحديثه هنا", subtitle: "يتم تجاهل التبعيات ومجلدات البناء تلقائيًا.", browseBtn: "اختيار مجلد", dialogError: "تعذر فتح نافذة اختيار المجلد." },
-    projectStep: { ...english.projectStep, selectedFolder: "المجلد المحدد", localPathLabel: "المسار المحلي", filesCount: "ملفات", remoteUrlLabel: "عنوان مستودع GitHub", remoteUrlPlaceholder: "https://github.com/account/project.git", saveRemoteBtn: "حفظ العنوان", updateRemoteBtn: "تحديث العنوان", folderAccess: "الوصول إلى المجلد", folderAccessGranted: "تم منح الوصول", folderAccessDesc: "يقتصر الوصول على المجلد المحدد.", gitRootTitle: "حالة Git:", gitRootPresent: "يوجد مستودع Git في المجلد.", gitRootAbsent: "سيتم تهيئة Git عند النشر لأول مرة.", continueBtn: "مراجعة الملفات والأمان" },
-    sensitiveStep: { ...english.sensitiveStep, noProjectSelected: "اختر مجلدًا من صفحة المشروع.", warningTitle: "راجع الملفات قبل النشر", warningDesc: "يتم اكتشاف أسماء الملفات الحساسة الشائعة مثل .env والمفاتيح والرموز.", colFile: "الملف المكتشف", colAction: "الحالة والإجراء", noSensitiveDetected: "لم يتم اكتشاف أسماء ملفات حساسة معروفة.", trackedDanger: "يتتبع Git هذا الملف؛ تجاهله لا يحذف سجله السابق.", untrackedWarn: "ملف مريب؛ ستتم إضافته إلى .gitignore.", untrackBtn: "إيقاف التتبع والتجاهل", ignoreBtn: "إضافة إلى .gitignore", backBtn: "← رجوع", continueBtn: "متابعة" },
-    syncStep: { ...english.syncStep, noProjectSelected: "اختر مجلدًا من صفحة المشروع.", firstPublishTitle: "نشر المشروع لأول مرة", firstPublishDesc: "سيتم إنشاء مستودع خاص افتراضيًا.", repoNamePlaceholder: "اسم-المستودع", privateRepoCheckbox: "خاص", publicRepoLabel: "عام", createAndPublishBtn: "إنشاء ونشر", branchLabel: "الفرع:", statClean: "نظيف", statLocalState: "الحالة المحلية", statLocalChanges: "التغييرات المحلية", actionsTitle: "تحديث المشروع على GitHub", actionsDesc: "يتم حفظ التغييرات المحلية وإرسالها دون إعادة كتابة السجل البعيد.", commitMsgPlaceholder: "رسالة الالتزام", publishBtn: "تحديث المشروع", recentHistoryTitle: "السجل الأخير", noCommits: "لا توجد عمليات التزام بعد.", unnamedCommit: "التزام بلا رسالة" },
-    cloneStep: { ...english.cloneStep, title: "استنساخ مستودع بأمان", desc: "يمكن استنساخ المستودعات العامة دون تسجيل الدخول. سجّل الدخول للمستودعات الخاصة.", badge: "GitHub HTTPS", urlLabel: "عنوان مستودع GitHub", urlPlaceholder: "https://github.com/organization/project.git", parentLabel: "مجلد الوجهة", parentPlaceholder: "اختر مجلد الوجهة…", browseBtn: "تصفح", subfolderLabel: "المجلد الذي سيتم إنشاؤه", selectPrompt: "اختر العنوان والمجلد", warningNotice: "يتوقف الاستنساخ إذا كان مجلد الوجهة موجودًا.", cancelBtn: "إلغاء", cloneBtn: "استنساخ المشروع" },
-    common: { ...english.common, loading: "جارٍ التحميل…", analyzingFolder: "جارٍ تحليل المجلد…", inProgress: "العملية قيد التنفيذ…", close: "إغلاق", dismiss: "إخفاء" },
-    dialogs: { ...english.dialogs, disconnectTitle: "هل تريد تسجيل الخروج من GitHub؟", disconnectDescription: "سيتم إغلاق الجلسة النشطة مع الاحتفاظ بالحساب لتسهيل إعادة الاتصال.", confirmDisconnect: "تسجيل الخروج", cancel: "إلغاء", hideCommit: "إخفاء هذا الالتزام" },
-    operationProgress: { publishing: "جارٍ النشر إلى GitHub…", cloning: "جارٍ الاستنساخ من GitHub…", completed: "اكتمل" },
-  };
+  return english;
 }
 
 /**
@@ -456,12 +559,89 @@ export function getTranslations(lang: Language): Translations {
  * in the chosen language.
  */
 export function translateError(error: unknown, lang: Language): string {
+  const french = lang === "fr";
+  const spanish = lang === "es";
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+
+  if (/multiple references|multiple ref|refspec|ambiguous ref/i.test(message)) {
+    return french
+      ? "La branche distante est ambiguë. Vérifiez son nom et réessayez ; aucune réécriture de l’historique ne sera effectuée."
+      : spanish
+        ? "La rama remota es ambigua. Comprueba su nombre y vuelve a intentarlo; no se reescribirá el historial."
+        : "The remote branch is ambiguous. Check its name and retry; remote history will not be rewritten.";
+  }
+  if (/forbidden path|allow-lstat|permission denied|access is denied|eacces|os error 3|winerror\s*3|no such file or directory|cannot access|impossible.{0,50}(?:dossier|autoriser|accès)/i.test(message)) {
+    return french
+      ? "L’accès au dossier du projet n’est plus disponible. Autorisez-le à nouveau en le sélectionnant avec le sélecteur de dossiers."
+      : spanish
+        ? "Ya no se puede acceder a la carpeta del proyecto. Vuelve a autorizarla seleccionándola con el selector de carpetas."
+        : "The project folder is no longer accessible. Re-authorize it by selecting it with the folder picker.";
+  }
+  if (/repository not found|not found|introuvable|\b404\b/i.test(message)) {
+    return french
+      ? "Dépôt GitHub introuvable ou inaccessible. Vérifiez l’URL et les droits de votre compte, puis réessayez."
+      : spanish
+        ? "No se encuentra el repositorio de GitHub o no tienes acceso. Comprueba la URL y los permisos de tu cuenta."
+        : "GitHub repository not found or inaccessible. Check the URL and your account permissions, then try again.";
+  }
+  if (/bad credentials|\b401\b|unauthorized|authentication failed/i.test(message)) {
+    return french
+      ? "Connexion à GitHub impossible. Vérifiez votre session dans l’application, puis reconnectez-vous si nécessaire."
+      : spanish
+        ? "No se pudo iniciar sesión en GitHub. Comprueba la sesión de la aplicación y vuelve a conectarte si es necesario."
+        : "Could not authenticate with GitHub. Check your app session and sign in again if needed.";
+  }
+  if (/failed to fetch|network error|cannot contact|dns|timeout|connection reset|network request failed/i.test(message)) {
+    return french
+      ? "Impossible de contacter GitHub. Vérifiez votre connexion Internet et réessayez."
+      : spanish
+        ? "No se pudo conectar con GitHub. Comprueba tu conexión a Internet e inténtalo de nuevo."
+        : "Could not reach GitHub. Check your internet connection and try again.";
+  }
+  if (/EMPTY_REMOTE|ref\.length|null is not an object|could not find.*head|unborn|no commits/i.test(message)) {
+    return french
+      ? "Le dépôt distant est vide ou ne possède pas encore de commit. Publiez d’abord le projet ou vérifiez la branche."
+      : spanish
+        ? "El repositorio remoto está vacío o aún no tiene commits. Publica primero el proyecto o comprueba la rama."
+        : "The remote repository is empty or has no commits yet. Publish the project first or check the branch.";
+  }
+  if (/fichiers sensibles|sensitive files|archivos sensibles/i.test(message)) {
+    return french
+      ? "La publication est bloquée : vérifiez les fichiers sensibles signalés et retirez-les du suivi Git avant de réessayer."
+      : spanish
+        ? "La publicación está bloqueada: revisa los archivos sensibles señalados y quítalos del seguimiento de Git antes de volver a intentarlo."
+        : "Publishing is blocked: review the flagged sensitive files and remove them from Git tracking before retrying.";
+  }
+  if (/modifications locales ne sont pas enregistrées|uncommitted local changes/i.test(message)) {
+    return french
+      ? "Des modifications locales ne sont pas enregistrées. Publiez ou validez vos changements avant de récupérer les mises à jour."
+      : spanish
+        ? "Hay cambios locales sin guardar. Publícalos o confírmalos antes de descargar actualizaciones."
+        : "You have uncommitted local changes. Commit or publish them before pulling updates.";
+  }
+  if (/fastforward|merge conflict|divergent/i.test(message)) {
+    return french
+      ? "La mise à jour rapide est impossible car les historiques divergent. Vérifiez les changements sur GitHub avant de réessayer."
+      : spanish
+        ? "No se puede actualizar en avance rápido porque los historiales divergen. Revisa los cambios de GitHub antes de volver a intentarlo."
+        : "A fast-forward update is not possible because the histories have diverged. Review the GitHub changes before retrying.";
+  }
+  if (/message du commit ne peut pas être vide|commit message cannot be empty/i.test(message)) {
+    return french ? "Le message du commit ne peut pas être vide."
+      : spanish ? "El mensaje del commit no puede estar vacío."
+        : "The commit message cannot be empty.";
+  }
+
   if (!error) {
-    return lang === "fr" ? "Une erreur inattendue est survenue." : "An unexpected error occurred.";
+    return french
+      ? "Une erreur inattendue est survenue. Réessayez. Si le problème persiste, vérifiez l’accès au projet et à GitHub."
+      : spanish
+        ? "Se produjo un error inesperado. Vuelve a intentarlo y comprueba el acceso al proyecto y a GitHub."
+        : "An unexpected error occurred. Retry and check access to the project and GitHub.";
   }
 
   const rawMessage = error instanceof Error ? error.message : String(error);
-  if (lang === "es" || lang === "ar") {
+  if (lang === "es") {
     const spanish = lang === "es";
     if (/forbidden path|allow-lstat/i.test(rawMessage)) {
       return spanish
@@ -501,7 +681,7 @@ export function translateError(error: unknown, lang: Language): string {
     if (/does not exist|not found|introuvable/i.test(rawMessage)) {
       return spanish ? "No se encontró el archivo o repositorio. Comprueba la ruta y la URL." : "تعذر العثور على الملف أو المستودع. تحقق من المسار والعنوان.";
     }
-    return spanish ? `Error: ${rawMessage}` : `خطأ: ${rawMessage}`;
+    return "Se produjo un error al realizar la operación. Vuelve a intentarlo y comprueba los permisos del proyecto y de GitHub.";
   }
 
   // 1. Empty remote / null ref.length error (isomorphic-git bug on empty repos)
@@ -605,13 +785,9 @@ export function translateError(error: unknown, lang: Language): string {
   // Causes : User-Agent absent (WAF), mauvais format auth, branche protégée,
   //          ou droits d'écriture insuffisants sur le dépôt.
   if (/403|forbidden/i.test(rawMessage)) {
-    const details = (error as { data?: { response?: string } })?.data?.response;
-    const extra = details && details.trim() && !details.includes("<html")
-      ? ` — ${details.slice(0, 200).trim()}`
-      : "";
     return lang === "fr"
-      ? `Accès refusé par GitHub (HTTP 403 Forbidden)${extra}. Vérifiez que vous avez bien les droits d'écriture sur ce dépôt, que la branche n'est pas protégée, ou déconnectez puis reconnectez votre compte GitHub.`
-      : `Access denied by GitHub (HTTP 403 Forbidden)${extra}. Verify you have write access to this repository, that the branch is not protected, or sign out and reconnect your GitHub account.`;
+      ? "Accès refusé par GitHub. Vérifiez vos droits d’écriture sur ce dépôt et les règles de protection de la branche."
+      : "GitHub denied access. Check your write permission for this repository and the branch protection rules.";
   }
 
   // 14c. User canceled / aborted auth flow
@@ -642,8 +818,9 @@ export function translateError(error: unknown, lang: Language): string {
       : "Cannot fast-forward: remote changes conflict with your local modifications.";
   }
 
-  // Fallback to original
-  return rawMessage;
+  return french
+    ? "L’opération n’a pas abouti. Réessayez. Si le problème persiste, vérifiez l’accès au projet et à GitHub."
+    : "The operation could not be completed. Retry and check access to the project and GitHub.";
 }
 
 const STORAGE_KEY = "github_simplifie_lang";
@@ -651,9 +828,9 @@ const STORAGE_KEY = "github_simplifie_lang";
 export function getInitialLanguage(): Language {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved === "fr" || saved === "en" || saved === "es" || saved === "ar") return saved;
+    if (saved === "fr" || saved === "en" || saved === "es") return saved;
     const browserLang = navigator.language?.toLowerCase() ?? "";
-    return browserLang.startsWith("en") ? "en" : "fr";
+    return browserLang.startsWith("en") ? "en" : browserLang.startsWith("es") ? "es" : "fr";
   } catch {
     return "fr";
   }

@@ -52,7 +52,10 @@ function filtreFichiersDuProjet(dir: string, filepath: string): boolean {
 
 type StatutFichierGit = Awaited<ReturnType<typeof git.status>>;
 
-async function obtenirStatutsFichiers(dir: string): Promise<[string, StatutFichierGit][]> {
+async function obtenirStatutsFichiers(
+  dir: string,
+  onProgress?: (evt: ProgressionGit) => void
+): Promise<[string, StatutFichierGit][]> {
   const [tracked, filesOnDisk] = await Promise.all([
     git.listFiles({ fs, dir }),
     listerCheminsRelatifs(dir),
@@ -72,6 +75,11 @@ async function obtenirStatutsFichiers(dir: string): Promise<[string, StatutFichi
         ] as [string, StatutFichierGit])
       ))
     );
+    onProgress?.({
+      phase: "scan",
+      loaded: Math.min(index + batch.length, candidates.length),
+      total: candidates.length,
+    });
   }
 
   return statuses;
@@ -270,30 +278,39 @@ async function lireGitignore(dir: string): Promise<string[]> {
   }
 }
 
-async function ajouterTousLesFichiers(dir: string): Promise<void> {
+async function ajouterTousLesFichiers(
+  dir: string,
+  onProgress?: (evt: ProgressionGit) => void
+): Promise<void> {
   await verifierAucunFichierSensible(dir);
   if (!(await contientCommit(dir))) {
     const files = await listerCheminsRelatifs(dir);
-    for (const filepath of files) {
-      if (isSensitivePath(filepath) || estCheminGenere(filepath)) continue;
-      await git.add({ fs, dir, filepath });
+    for (let index = 0; index < files.length; index += 1) {
+      const filepath = files[index];
+      if (!isSensitivePath(filepath) && !estCheminGenere(filepath)) {
+        await git.add({ fs, dir, filepath });
+      }
+      onProgress?.({ phase: "add", loaded: index + 1, total: files.length });
     }
     return;
   }
-  const statuses = await obtenirStatutsFichiers(dir);
-  for (const [filepath, status] of statuses) {
+  const statuses = await obtenirStatutsFichiers(dir, onProgress);
+  for (let index = 0; index < statuses.length; index += 1) {
+    const [filepath, status] = statuses[index];
     if (status === "*deleted" || status === "deleted") {
       await git.remove({ fs, dir, filepath });
     } else if (status !== "ignored" && status !== "absent") {
       await git.add({ fs, dir, filepath });
     }
+    onProgress?.({ phase: "add", loaded: index + 1, total: statuses.length });
   }
 }
 
 export async function ajouterEtCommiter(
   dir: string,
   message = "Mise à jour du projet",
-  author?: { name: string; email: string }
+  author?: { name: string; email: string },
+  onProgress?: (evt: ProgressionGit) => void
 ): Promise<void> {
   if (!message.trim()) {
     throw new Error("Le message du commit ne peut pas être vide.");
@@ -301,8 +318,9 @@ export async function ajouterEtCommiter(
   const identity = await garantirIdentiteGit(dir, author);
   await preparerGitignore(dir, "");
   await verifierAucunFichierSensible(dir);
-  await ajouterTousLesFichiers(dir);
+  await ajouterTousLesFichiers(dir, onProgress);
   await verifierAucunFichierSensible(dir);
+  onProgress?.({ phase: "commit", loaded: 0, total: 1 });
   await git.commit({
     fs,
     dir,
@@ -310,6 +328,7 @@ export async function ajouterEtCommiter(
     author: identity,
     committer: identity,
   });
+  onProgress?.({ phase: "commit", loaded: 1, total: 1 });
 }
 
 export async function preparerGitignore(
@@ -359,12 +378,14 @@ export async function publier({
     throw new Error("Le dépôt distant associé a changé. Vérifie l’association avant de publier.");
   }
 
+  const branch = await obtenirBrancheCourante(dir);
   await git.push({
     fs,
     http,
     dir,
     remote: "origin",
-    ref: await obtenirBrancheCourante(dir),
+    ref: `refs/heads/${branch}`,
+    remoteRef: `refs/heads/${branch}`,
     onAuth: () => authGitHub(token),
     headers: { "User-Agent": "GitHub-Simplifie/1.0" },
     onProgress: (evt) => onProgress?.(evt as ProgressionGit),
@@ -416,17 +437,12 @@ export async function recupererMisesAJour({
   }
 
   // Vérifier si le serveur distant possède des commits/références
-  let serverRefs: { ref: string; oid: string }[] = [];
-  try {
-    serverRefs = await git.listServerRefs({
-      http,
-      url: remoteUrl,
-      onAuth: () => authGitHub(token),
-      headers: { "User-Agent": "GitHub-Simplifie/1.0" },
-    });
-  } catch {
-    // Si la commande échoue, tenter le pull direct
-  }
+  const serverRefs = await git.listServerRefs({
+    http,
+    url: remoteUrl,
+    onAuth: () => authGitHub(token),
+    headers: { "User-Agent": "GitHub-Simplifie/1.0" },
+  });
 
   if (serverRefs.length === 0) {
     throw new Error("EMPTY_REMOTE");
@@ -438,6 +454,7 @@ export async function recupererMisesAJour({
       http,
       dir,
       ref: branch,
+      remoteRef: `refs/heads/${branch}`,
       remote: "origin",
       singleBranch: true,
       fastForwardOnly: true,
