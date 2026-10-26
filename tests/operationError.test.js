@@ -50,6 +50,14 @@ test("classifies native Git, network, conflict, and timeout errors", () => {
   assert.equal(category("unrecognized transport failure"), "UNKNOWN_ERROR");
 });
 
+test("classifies invalid Git repositories and clone destination errors explicitly", () => {
+  assert.equal(category("GIT_REPOSITORY_INVALID: fatal: not in a git directory"), "NOT_A_GIT_REPOSITORY");
+  assert.equal(category("INVALID_WORKING_DIRECTORY: parent directory is inaccessible"), "INVALID_WORKING_DIRECTORY");
+  assert.equal(category("INVALID_PATH: destination name is invalid"), "INVALID_PATH");
+  assert.equal(category("CLONE_DESTINATION_ERROR: destination already exists"), "CLONE_DESTINATION_ERROR");
+  assert.equal(category("GIT_NATIVE_ERROR:128:operation=clone;fatal: could not create work tree dir"), "CLONE_DESTINATION_ERROR");
+});
+
 test("redacts access tokens and common personal home paths from diagnostics", () => {
   const token = "ghp_abcdefghijklmnopqrstuvwxyz123456789012";
   const diagnostic = creerDiagnosticOperation(

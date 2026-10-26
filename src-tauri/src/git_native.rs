@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs::{self, File},
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -147,6 +147,127 @@ fn validate_dir(dir: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+#[cfg(windows)]
+fn git_cli_path(path: &Path) -> PathBuf {
+    let Some(path) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    let Some(path_without_prefix) = path.strip_prefix(r"\\?\") else {
+        return PathBuf::from(path);
+    };
+    let normalized = if let Some(unc) = path_without_prefix.strip_prefix("UNC\\") {
+        format!(r"\\{unc}")
+    } else {
+        path_without_prefix.to_string()
+    };
+    if normalized.encode_utf16().count() < 260 {
+        PathBuf::from(normalized)
+    } else {
+        PathBuf::from(format!(r"\\?\{path_without_prefix}"))
+    }
+}
+
+#[cfg(not(windows))]
+fn git_cli_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
+fn git_repository_exists(root: &Path) -> Result<bool, String> {
+    match run_simple(root, &["rev-parse", "--show-toplevel"]) {
+        Ok(_) => Ok(true),
+        Err(error) if error.starts_with("GIT_NATIVE_ERROR:128:") => {
+            if root.join(".git").exists() {
+                Err(format!(
+                    "GIT_REPOSITORY_INVALID: Git ne reconnaît pas les métadonnées .git de ce dossier. Elles ont été conservées; vérifiez ou restaurez le dépôt avant de réessayer. Détail : {error}"
+                ))
+            } else {
+                Ok(false)
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn initialize_git_repository(root: &Path) -> Result<(), String> {
+    if git_repository_exists(root)? {
+        return Ok(());
+    }
+
+    run_simple(root, &["init", "--initial-branch=main"]).map_err(|error| {
+        format!("GIT_INIT_FAILED: impossible d’initialiser le dépôt dans le dossier sélectionné : {error}")
+    })?;
+    if !git_repository_exists(root)? {
+        return Err(
+            "GIT_INIT_VERIFICATION_FAILED: Git n’a pas reconnu le dépôt après son initialisation."
+                .to_string(),
+        );
+    }
+
+    for (key, value) in [
+        ("user.name", "GitHub Simplifié"),
+        ("user.email", "github-simplifie@users.noreply.github.com"),
+    ] {
+        match run_simple(root, &["config", "--local", "--get", key]) {
+            Ok(_) => {}
+            Err(error) if error.starts_with("GIT_NATIVE_ERROR:1:") => {
+                run_simple(root, &["config", "--local", key, value])
+                    .map_err(|error| format!("GIT_INIT_CONFIG_FAILED: impossible de configurer {key} : {error}"))?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "GIT_INIT_CONFIG_FAILED: impossible de vérifier la configuration {key} : {error}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn clone_repository_into(
+    parent: &Path,
+    target_name: &std::ffi::OsStr,
+    clone: impl FnOnce(&Path, &str) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    let target_name = target_name
+        .to_str()
+        .ok_or("INVALID_PATH: le nom de destination n’est pas encodé en UTF-8.")?;
+    let mut components = Path::new(target_name).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err("INVALID_PATH: le nom du dossier cible est invalide.".to_string());
+    }
+
+    let target = parent.join(target_name);
+    if target.exists() {
+        return Err(
+            "CLONE_DESTINATION_ERROR: le dossier cible existe déjà; aucun fichier n’a été modifié."
+                .to_string(),
+        );
+    }
+    fs::create_dir(&target)
+        .map_err(|error| format!("CLONE_DESTINATION_ERROR: impossible de créer le dossier cible : {error}"))?;
+
+    let clone_result = clone(parent, target_name).and_then(|()| {
+        git_repository_exists(&target).and_then(|is_repository| {
+            if is_repository {
+                Ok(())
+            } else {
+                Err("CLONE_VERIFICATION_FAILED: Git a terminé sans créer un dépôt valide.".to_string())
+            }
+        })
+    });
+    if let Err(error) = clone_result {
+        if let Err(cleanup) = fs::remove_dir_all(&target) {
+            return Err(format!(
+                "{error}; CLONE_CLEANUP_FAILED: impossible de supprimer le dossier créé par cette opération : {cleanup}"
+            ));
+        }
+        return Err(error);
+    }
+    Ok(target)
+}
+
 fn validate_github_remote(raw: &str) -> Result<String, String> {
     let parsed = url::Url::parse(raw.trim())
         .map_err(|_| "L’URL du dépôt GitHub est invalide.".to_string())?;
@@ -225,11 +346,20 @@ fn emit_progress(
     );
 }
 
+fn git_failure_message(code: i32, operation: &str, cwd: &Path, stderr: &str) -> String {
+    format!(
+        "GIT_NATIVE_ERROR:{code}:operation={operation};os={};cwd={}:{}",
+        std::env::consts::OS,
+        cwd.display(),
+        stderr.trim()
+    )
+}
+
 fn command_for(dir: &Path, args: &[String], token: Option<&str>) -> Command {
     let mut command = Command::new("git");
     command
         .arg("-C")
-        .arg(dir)
+        .arg(git_cli_path(dir))
         .args(args)
         .stdin(Stdio::null());
     command.env("GIT_TERMINAL_PROMPT", "0");
@@ -414,10 +544,11 @@ fn run_git(
         .ok_or_else(|| "Le processus Git s’est arrêté sans résultat.".to_string())?;
     if !status.success() {
         let detail = String::from_utf8_lossy(&result.stderr);
-        return Err(format!(
-            "GIT_NATIVE_ERROR:{}:{}",
+        return Err(git_failure_message(
             status.code().unwrap_or(-1),
-            detail.trim()
+            args.first().map(String::as_str).unwrap_or("unknown"),
+            dir,
+            &detail,
         ));
     }
     Ok(result)
@@ -426,7 +557,7 @@ fn run_git(
 fn run_simple(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let mut child = Command::new("git")
         .arg("-C")
-        .arg(dir)
+        .arg(git_cli_path(dir))
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
@@ -484,10 +615,11 @@ fn run_simple(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .map_err(|_| "Impossible de récupérer l’erreur Git.".to_string())?
         .clone();
     if !status.success() {
-        return Err(format!(
-            "GIT_NATIVE_ERROR:{}:{}",
+        return Err(git_failure_message(
             status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&stderr).trim()
+            args.first().copied().unwrap_or("unknown"),
+            dir,
+            &String::from_utf8_lossy(&stderr),
         ));
     }
     Ok(stdout)
@@ -652,6 +784,12 @@ fn generated_folder_names(path: &Path, names: &mut HashSet<String>) {
 }
 
 fn append_ignore_rules(dir: &Path, rules: &[String]) -> Result<(), String> {
+    if rules
+        .iter()
+        .any(|rule| rule.chars().any(|character| matches!(character, '\r' | '\n')))
+    {
+        return Err("Une règle .gitignore ne peut pas contenir de saut de ligne.".to_string());
+    }
     let path = dir.join(".gitignore");
     let mut existing = match File::open(&path) {
         Ok(file) => {
@@ -689,6 +827,84 @@ fn append_ignore_rules(dir: &Path, rules: &[String]) -> Result<(), String> {
     }
     fs::write(path, existing)
         .map_err(|error| format!("Impossible de mettre à jour .gitignore : {error}"))
+}
+
+fn ignore_rule_for_path(filepath: &str) -> Result<String, String> {
+    if filepath.chars().any(|character| matches!(character, '\r' | '\n')) {
+        return Err("Le nom du fichier contient un saut de ligne et ne peut pas être ignoré.".to_string());
+    }
+    let characters: Vec<char> = filepath.chars().collect();
+    let mut rule = String::from("/");
+    for (index, character) in characters.iter().enumerate() {
+        if matches!(character, '\\' | '*' | '?' | '[' | ']')
+            || (*character == ' ' && index + 1 == characters.len())
+        {
+            rule.push('\\');
+        }
+        rule.push(*character);
+    }
+    Ok(rule)
+}
+
+fn git_add_args(excluded_paths: &[String]) -> Vec<String> {
+    let mut args = vec!["add".to_string(), "-A".to_string(), "--".to_string(), ".".to_string()];
+    args.extend(
+        excluded_paths
+            .iter()
+            .map(|path| format!(":(exclude,literal){path}")),
+    );
+    args
+}
+
+fn require_utf8_git_path(raw: &[u8]) -> Result<&str, String> {
+    std::str::from_utf8(raw).map_err(|_| {
+        "GIT_UNSUPPORTED_PATH_ENCODING: publication arrêtée car un chemin Git n’est pas en UTF-8 et ne peut pas être exclu de façon sûre.".to_string()
+    })
+}
+
+fn git_add_exclusions(root: &Path, protected_paths: &[String]) -> Result<Vec<String>, String> {
+    let mut ignored_paths = HashSet::new();
+    for batch in protected_paths.chunks(32) {
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(git_cli_path(root))
+            .args(["check-ignore", "--no-index", "--stdin", "-z"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("Impossible de vérifier les exclusions Git : {error}"))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            for path in batch {
+                stdin
+                    .write_all(path.as_bytes())
+                    .and_then(|_| stdin.write_all(&[0]))
+                    .map_err(|error| format!("Impossible d’envoyer les chemins à Git : {error}"))?;
+            }
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|error| format!("Impossible de vérifier les exclusions Git : {error}"))?;
+        if !output.status.success() && output.status.code() != Some(1) {
+            return Err(format!(
+                "GIT_NATIVE_ERROR:{}:{}",
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        ignored_paths.extend(
+            output
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|path| !path.is_empty())
+                .map(|path| String::from_utf8_lossy(path).into_owned()),
+        );
+    }
+    Ok(protected_paths
+        .iter()
+        .filter(|path| !ignored_paths.contains(path.as_str()))
+        .cloned()
+        .collect())
 }
 
 fn detect_project_type(root_files: &HashSet<String>) -> (String, String) {
@@ -750,7 +966,7 @@ pub async fn git_scan_project(
         let mut root_files = HashSet::new();
         let mut file_count = 0u64;
         let scan_started = Instant::now();
-        let has_existing_git = root.join(".git").exists();
+        let has_existing_git = git_repository_exists(&root)?;
 
         while let Some(frame) = stack.last_mut() {
             if cancel.load(Ordering::Relaxed) {
@@ -864,10 +1080,11 @@ pub async fn git_detect_project(dir: String) -> Result<ProjectAnalysis, String> 
         }
         let (project_type, suggested_gitignore) = detect_project_type(&root_files);
         eprintln!("project-detect elapsed_ms={}", started.elapsed().as_millis());
+        let has_existing_git = git_repository_exists(&root)?;
         Ok(ProjectAnalysis {
             project_type,
             suggested_gitignore,
-            has_existing_git: root.join(".git").exists(),
+            has_existing_git,
             sensitive_files: Vec::new(),
             file_count: 0,
         })
@@ -938,7 +1155,7 @@ fn stream_nul_output(
     let mut command = Command::new("git");
     command
         .arg("-C")
-        .arg(root)
+        .arg(git_cli_path(root))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1138,10 +1355,7 @@ pub async fn git_status_project(dir: String, offset: usize, limit: usize) -> Res
 pub async fn git_init(dir: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = validate_dir(&dir)?;
-        run_simple(&root, &["init", "--initial-branch=main"])?;
-        run_simple(&root, &["config", "user.name", "GitHub Simplifié"])?;
-        run_simple(&root, &["config", "user.email", "github-simplifie@users.noreply.github.com"])?;
-        Ok(())
+        initialize_git_repository(&root)
     })
     .await
     .map_err(|error| format!("L’initialisation Git a échoué : {error}"))?
@@ -1173,7 +1387,7 @@ pub async fn git_set_ignore(dir: String, filepath: String) -> Result<(), String>
         if relative.is_absolute() || relative.components().any(|component| matches!(component, std::path::Component::ParentDir | std::path::Component::RootDir)) {
             return Err("Chemin de fichier invalide.".to_string());
         }
-        let rule = format!("/{}", filepath.replace('\\', "/"));
+        let rule = ignore_rule_for_path(&filepath)?;
         append_ignore_rules(&root, &[rule])?;
         run_simple(&root, &["rm", "--cached", "--ignore-unmatch", "--", &filepath])?;
         Ok(())
@@ -1194,72 +1408,6 @@ pub async fn git_prepare_ignore(dir: String, suggested: String) -> Result<(), St
     .map_err(|error| format!("La préparation de .gitignore a échoué : {error}"))?
 }
 
-fn generated_pathspecs() -> [&'static str; 18] {
-    [
-        ":(glob)**/node_modules/**",
-        ":(glob)**/target/**",
-        ":(glob)**/dist/**",
-        ":(glob)**/vendor/**",
-        ":(glob)**/build/**",
-        ":(glob)**/.git/**",
-        ":(glob)**/.godot/**",
-        ":(glob)**/.next/**",
-        ":(glob)**/.cache/**",
-        ":(glob)**/coverage/**",
-        ":(glob)**/.venv/**",
-        ":(glob)**/venv/**",
-        ":(glob)**/.tox/**",
-        ":(glob)**/.mypy_cache/**",
-        ":(glob)**/.ruff_cache/**",
-        ":(glob)**/.pytest_cache/**",
-        ":(glob)**/.idea/**",
-        ":(glob)**/.vscode/**",
-    ]
-}
-
-fn untrack_paths(root: &Path, paths: &[String]) -> Result<(), String> {
-    for batch in paths.chunks(32) {
-        let mut command = Command::new("git");
-        command
-            .arg("-C")
-            .arg(root)
-            .args(["rm", "--cached", "--ignore-unmatch", "--"])
-            .args(batch)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        let output = command
-            .output()
-            .map_err(|error| format!("Impossible de préparer l’index Git : {error}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "GIT_NATIVE_ERROR:{}:{}",
-                output.status.code().unwrap_or(-1),
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn remove_generated_from_index(
-    app: &AppHandle,
-    operation_id: &str,
-    root: &Path,
-    cancel: &AtomicBool,
-) -> Result<(), String> {
-    let mut args = vec![
-        "rm".to_string(),
-        "-r".to_string(),
-        "--cached".to_string(),
-        "--ignore-unmatch".to_string(),
-        "--".to_string(),
-    ];
-    args.extend(generated_pathspecs().iter().map(|path| path.to_string()));
-    run_git(app, operation_id, root, &args, None, cancel, PROCESS_TIMEOUT)?;
-    Ok(())
-}
-
 fn prepare_tracked_exclusions(
     root: &Path,
     cancel: &AtomicBool,
@@ -1269,8 +1417,8 @@ fn prepare_tracked_exclusions(
     let mut excluded_large_files = Vec::new();
     let mut warning_large_files = Vec::new();
     stream_nul_output(root, &["ls-files", "-z"], Some(cancel), |raw| {
-        let path = PathBuf::from(String::from_utf8_lossy(raw).to_string());
-        let filepath = path.to_string_lossy().replace('\\', "/");
+        let path = PathBuf::from(require_utf8_git_path(raw)?);
+        let filepath = path.to_string_lossy().into_owned();
         if sensitive_path(&path) {
             if sensitive.len() == PAGE_SIZE_MAX {
                 return Err("GIT_TOO_MANY_SENSITIVE_FILES".to_string());
@@ -1303,6 +1451,22 @@ fn prepare_tracked_exclusions(
     })
 }
 
+fn reject_tracked_protected_content(protection: &CommitPreparation) -> Result<(), String> {
+    if protection.excluded_sensitive_files.is_empty()
+        && protection.excluded_large_files.is_empty()
+        && protection.excluded_generated_folders.is_empty()
+    {
+        return Ok(());
+    }
+
+    Err(format!(
+        "GIT_PROTECTED_TRACKED_FILES: fichiers sensibles={:?}; fichiers dépassant 100 Mio={:?}; dossiers générés={:?}. Aucun fichier suivi n’a été retiré de l’index. Décidez explicitement lesquels désuivre avant de recommencer.",
+        protection.excluded_sensitive_files,
+        protection.excluded_large_files,
+        protection.excluded_generated_folders
+    ))
+}
+
 fn scan_changed_file_sizes(root: &Path, app: &AppHandle, operation_id: &str, cancel: &AtomicBool) -> Result<CommitPreparation, String> {
     let mut excluded_large_files = Vec::new();
     let mut warning_large_files = Vec::new();
@@ -1315,6 +1479,7 @@ fn scan_changed_file_sizes(root: &Path, app: &AppHandle, operation_id: &str, can
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         Some(cancel),
         |record| {
+        require_utf8_git_path(record)?;
         if renamed_source {
             renamed_source = false;
             return Ok(());
@@ -1390,46 +1555,24 @@ pub async fn git_commit_project(
     let operations_ref = operations.cancellations.clone();
     run_with_operation_async(app, operations_ref, operation_id, move |app, id, cancel| {
         let root = validate_dir(&dir)?;
-        let mut ignore = default_ignore_rules();
-        ignore.extend(sensitive_rules());
-        append_ignore_rules(&root, &ignore)?;
         let tracked_protection = prepare_tracked_exclusions(&root, &cancel)?;
+        reject_tracked_protected_content(&tracked_protection)?;
         let mut preparation = scan_changed_file_sizes(&root, &app, &id, &cancel)?;
-        for filepath in tracked_protection.excluded_sensitive_files {
-            if !preparation.excluded_sensitive_files.contains(&filepath) {
-                preparation.excluded_sensitive_files.push(filepath);
-            }
-        }
-        for filepath in tracked_protection.excluded_large_files {
-            if !preparation.excluded_large_files.contains(&filepath) {
-                preparation.excluded_large_files.push(filepath);
-            }
-        }
         for filepath in tracked_protection.warning_large_files {
             if !preparation.warning_large_files.contains(&filepath) {
                 preparation.warning_large_files.push(filepath);
             }
         }
-        for folder in tracked_protection.excluded_generated_folders {
-            if !preparation.excluded_generated_folders.contains(&folder) {
-                preparation.excluded_generated_folders.push(folder);
-            }
-        }
+        let mut ignore = default_ignore_rules();
+        ignore.extend(sensitive_rules());
+        append_ignore_rules(&root, &ignore)?;
         let mut protected_files = preparation.excluded_sensitive_files.clone();
         protected_files.extend(preparation.excluded_large_files.iter().cloned());
         protected_files.sort();
         protected_files.dedup();
-        if !protected_files.is_empty() {
-            let rules = protected_files
-                .iter()
-                .map(|filepath| format!("/{}", filepath.replace('\\', "/")))
-                .collect::<Vec<_>>();
-            append_ignore_rules(&root, &rules)?;
-            untrack_paths(&root, &protected_files)?;
-        }
-        remove_generated_from_index(&app, &id, &root, &cancel)?;
+        let staging_exclusions = git_add_exclusions(&root, &protected_files)?;
         emit_progress(&app, &id, "stage", Some(0), None);
-        let args = vec!["add".to_string(), "-A".to_string(), "--".to_string(), ".".to_string()];
+        let args = git_add_args(&staging_exclusions);
         run_git(&app, &id, &root, &args, None, &cancel, PROCESS_TIMEOUT)?;
         if cancel.load(Ordering::Relaxed) { return Err("GIT_OPERATION_CANCELLED".to_string()); }
         run_simple(&root, &["config", "user.name", &name])?;
@@ -1521,37 +1664,35 @@ pub async fn git_clone_project(
     run_with_operation_async(app, operations_ref, operation_id, move |app, id, cancel| {
         let validated_url = validate_github_remote(&url)?;
         let requested_target = PathBuf::from(&destination);
-        let parent = requested_target.parent().ok_or("Dossier parent invalide.")?;
+        let parent = requested_target
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         let parent = fs::canonicalize(parent)
-            .map_err(|error| format!("Impossible de vérifier le dossier de destination : {error}"))?;
+            .map_err(|error| format!("INVALID_WORKING_DIRECTORY: impossible d’accéder au dossier parent du clonage : {error}"))?;
+        if !parent.is_dir() {
+            return Err("INVALID_WORKING_DIRECTORY: le parent de destination n’est pas un dossier.".to_string());
+        }
         let name = requested_target.file_name().ok_or("Nom de dossier cible invalide.")?;
-        let target = parent.join(name);
-        if target.exists() { return Err("Le dossier cible existe déjà.".to_string()); }
-        let safe_id: String = id.chars().filter(|character| character.is_ascii_alphanumeric()).collect();
-        if safe_id.is_empty() { return Err("Identifiant d’opération invalide.".to_string()); }
-        let temporary = parent.join(format!(".gsimplifie-clone-{safe_id}"));
-        if temporary.exists() { return Err("Un dossier temporaire de clonage existe déjà.".to_string()); }
-        let args = vec![
-            "clone".to_string(),
-            "--progress".to_string(),
-            "--single-branch".to_string(),
-            validated_url,
-            temporary.to_string_lossy().into_owned(),
-        ];
-        if let Err(error) = run_git(&app, &id, &parent, &args, Some(&token), &cancel, PROCESS_TIMEOUT) {
-            if temporary.exists() {
-                fs::remove_dir_all(&temporary)
-                    .map_err(|cleanup| format!("{error}; nettoyage du clonage temporaire impossible : {cleanup}"))?;
-            }
-            return Err(error);
-        }
-        if let Err(error) = fs::rename(&temporary, &target) {
-            if temporary.exists() {
-                fs::remove_dir_all(&temporary)
-                    .map_err(|cleanup| format!("Impossible de finaliser le clonage : {error}; nettoyage impossible : {cleanup}"))?;
-            }
-            return Err(format!("Impossible de finaliser le clonage : {error}"));
-        }
+        clone_repository_into(&parent, name, |parent, git_destination| {
+            let args = vec![
+                "clone".to_string(),
+                "--progress".to_string(),
+                "--single-branch".to_string(),
+                validated_url,
+                git_destination.to_string(),
+            ];
+            run_git(
+                &app,
+                &id,
+                parent,
+                &args,
+                Some(&token),
+                &cancel,
+                PROCESS_TIMEOUT,
+            )
+            .map(|_| ())
+        })?;
         Ok(())
     }).await
 }
@@ -1577,9 +1718,9 @@ pub async fn git_list_sensitive_tracked(dir: String) -> Result<Vec<String>, Stri
         let root = validate_dir(&dir)?;
         let mut sensitive = Vec::new();
         stream_nul_output(&root, &["ls-files", "-z"], None, |raw| {
-            let path = PathBuf::from(String::from_utf8_lossy(raw).to_string());
+            let path = PathBuf::from(require_utf8_git_path(raw)?);
             if sensitive_path(&path) && sensitive.len() < PAGE_SIZE_MAX {
-                sensitive.push(path.to_string_lossy().replace('\\', "/"));
+                sensitive.push(path.to_string_lossy().into_owned());
             }
             Ok(())
         })?;
@@ -1617,6 +1758,151 @@ mod tests {
     }
 
     #[test]
+    fn git_init_creates_repository_and_repeated_init_preserves_history_and_config() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let project = TemporaryGitProject::new();
+        let root = project.0.join("projet avec espaces-é");
+        fs::create_dir(&root).expect("create project with spaces and Unicode");
+        fs::write(root.join("README.txt"), "user data").expect("write project file");
+
+        initialize_git_repository(&root).expect("initialize new repository");
+        assert!(git_repository_exists(&root).expect("verify initialized repository"));
+        assert_eq!(
+            String::from_utf8_lossy(
+                &run_simple(&root, &["config", "--local", "--get", "user.name"])
+                    .expect("read initial local Git identity")
+            )
+            .trim(),
+            "GitHub Simplifié"
+        );
+        run_simple(&root, &["add", "--", "README.txt"]).expect("stage project file");
+        run_simple(&root, &["commit", "-m", "initial"])
+            .expect("commit project fixture");
+        let head_before = run_simple(&root, &["rev-parse", "HEAD"]).expect("read initial commit");
+        run_simple(&root, &["config", "--local", "user.name", "Existing User"])
+            .expect("set existing local identity");
+
+        initialize_git_repository(&root).expect("reuse existing repository");
+        initialize_git_repository(&root).expect("repeated repository initialization");
+        assert_eq!(
+            run_simple(&root, &["rev-parse", "HEAD"]).expect("read preserved commit"),
+            head_before
+        );
+        assert_eq!(
+            String::from_utf8_lossy(
+                &run_simple(&root, &["config", "--local", "--get", "user.name"])
+                    .expect("read preserved local identity")
+            )
+            .trim(),
+            "Existing User"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("README.txt")).expect("read preserved user file"),
+            "user data"
+        );
+    }
+
+    #[test]
+    fn git_init_refuses_invalid_existing_metadata_without_overwriting_it() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let project = TemporaryGitProject::new();
+        let root = project.0.join("partial-repository");
+        fs::create_dir(&root).expect("create project directory");
+        fs::write(root.join(".git"), "preserve invalid metadata")
+            .expect("create invalid Git metadata fixture");
+
+        let error = initialize_git_repository(&root)
+            .expect_err("invalid existing Git metadata must not be overwritten");
+        assert!(error.starts_with("GIT_REPOSITORY_INVALID:"));
+        assert_eq!(
+            fs::read_to_string(root.join(".git")).expect("read preserved metadata"),
+            "preserve invalid metadata"
+        );
+        assert!(!root.join(".git/HEAD").exists());
+    }
+
+    #[test]
+    fn clone_uses_relative_destination_and_supports_spaces_and_unicode() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let source = TemporaryGitProject::new();
+        initialize_git_repository(&source.0).expect("initialize local source repository");
+        fs::write(source.0.join("README.txt"), "clone fixture").expect("write clone fixture");
+        run_simple(&source.0, &["add", "--", "README.txt"]).expect("stage clone fixture");
+        run_simple(&source.0, &["commit", "-m", "clone fixture"])
+            .expect("commit clone fixture");
+
+        let destination_parent = TemporaryGitProject::new();
+        let parent = destination_parent.0.join("parent avec espaces-é");
+        fs::create_dir(&parent).expect("create Unicode destination parent");
+        let source_path = source.0.to_str().expect("test source path should be UTF-8");
+        let target_name = std::ffi::OsStr::new("projet cloné");
+        let target = clone_repository_into(&parent, target_name, |parent, name| {
+            run_simple(
+                parent,
+                &[
+                    "clone",
+                    "--single-branch",
+                    source_path,
+                    name,
+                ],
+            )
+            .map(|_| ())
+        })
+        .expect("clone local repository into Unicode destination");
+        assert!(git_repository_exists(&target).expect("verify cloned repository"));
+        assert_eq!(
+            fs::read_to_string(target.join("README.txt")).expect("read cloned fixture"),
+            "clone fixture"
+        );
+    }
+
+    #[test]
+    fn clone_preserves_existing_destinations_and_cleans_only_its_failed_target() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let project = TemporaryGitProject::new();
+        let existing = project.0.join("existing");
+        fs::create_dir(&existing).expect("create preexisting destination");
+        fs::write(existing.join("keep.txt"), "keep").expect("write existing data");
+        let called = std::cell::Cell::new(false);
+        let existing_error = clone_repository_into(&project.0, std::ffi::OsStr::new("existing"), |_, _| {
+            called.set(true);
+            Ok(())
+        })
+        .expect_err("existing destination must be rejected");
+        assert!(existing_error.starts_with("CLONE_DESTINATION_ERROR:"));
+        assert!(!called.get(), "Git must not be called for existing destination");
+        assert_eq!(
+            fs::read_to_string(existing.join("keep.txt")).expect("read preserved file"),
+            "keep"
+        );
+
+        let failed = clone_repository_into(&project.0, std::ffi::OsStr::new("failed-clone"), |parent, name| {
+            run_simple(parent, &["clone", "missing-local-source", name]).map(|_| ())
+        })
+        .expect_err("clone failure must be returned");
+        assert!(failed.starts_with("GIT_NATIVE_ERROR:"));
+        assert!(!project.0.join("failed-clone").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_git_cli_path_normalizes_short_extended_paths_but_keeps_long_paths() {
+        let short = PathBuf::from(r"\\?\D:\Projets\Mon projet");
+        assert_eq!(git_cli_path(&short), PathBuf::from(r"D:\Projets\Mon projet"));
+
+        let long = PathBuf::from(format!(r"\\?\D:\{}", "long-path-segment\\".repeat(20)));
+        assert!(git_cli_path(&long).to_string_lossy().starts_with(r"\\?\D:\"));
+    }
+
+    #[test]
     fn base64_encodes_github_basic_auth() {
         assert_eq!(base64_basic("x-access-token:token"), "eC1hY2Nlc3MtdG9rZW46dG9rZW4=");
     }
@@ -1640,6 +1926,173 @@ mod tests {
     fn sensitive_examples_are_not_excluded() {
         assert!(!sensitive_path(Path::new(".env.example")));
         assert!(sensitive_path(Path::new(".env.production")));
+    }
+
+    #[test]
+    fn ignore_rules_reject_newlines_and_escape_gitignore_metacharacters() {
+        assert_eq!(
+            ignore_rule_for_path("config/secrets[dev].env").unwrap(),
+            "/config/secrets\\[dev\\].env"
+        );
+        assert!(ignore_rule_for_path(".env.secret\n!.env").is_err());
+
+        let project = TemporaryGitProject::new();
+        let injected_rule = "/.env.secret\n!.env".to_string();
+        assert!(append_ignore_rules(&project.0, &[injected_rule]).is_err());
+        assert!(!project.0.join(".gitignore").exists());
+    }
+
+    #[test]
+    fn generated_ignore_rule_matches_only_the_literal_filename_and_preserves_user_rules() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let project = TemporaryGitProject::new();
+        run_simple(&project.0, &["init"]).expect("initialize isolated test repository");
+        fs::write(project.0.join(".gitignore"), "# user rule\npersonal/\n")
+            .expect("write existing user ignore rules");
+        fs::create_dir(project.0.join("config")).expect("create config directory");
+        fs::write(project.0.join("config/secrets[dev].env"), "secret")
+            .expect("write sensitive literal filename");
+        fs::write(project.0.join("config/secretsd.env"), "ordinary")
+            .expect("write filename that must not match escaped brackets");
+
+        let rule = ignore_rule_for_path("config/secrets[dev].env").unwrap();
+        append_ignore_rules(&project.0, &[rule]).expect("append escaped ignore rule");
+        let ignore_contents =
+            fs::read_to_string(project.0.join(".gitignore")).expect("read resulting ignore file");
+        assert!(ignore_contents.contains("# user rule\npersonal/"));
+        assert!(ignore_contents.contains("/config/secrets\\[dev\\].env"));
+
+        let ignored = Command::new("git")
+            .arg("-C")
+            .arg(&project.0)
+            .args(["check-ignore", "--no-index", "-q", "--", "config/secrets[dev].env"])
+            .status()
+            .expect("check literal filename ignore match");
+        assert!(ignored.success());
+        let not_ignored = Command::new("git")
+            .arg("-C")
+            .arg(&project.0)
+            .args(["check-ignore", "--no-index", "-q", "--", "config/secretsd.env"])
+            .status()
+            .expect("check nonmatching filename");
+        assert_eq!(not_ignored.code(), Some(1));
+
+        #[cfg(unix)]
+        {
+            let literal_backslash_path = "config\\secret.env";
+            fs::write(project.0.join(literal_backslash_path), "secret")
+                .expect("write filename containing a literal backslash");
+            append_ignore_rules(
+                &project.0,
+                &[ignore_rule_for_path(literal_backslash_path).unwrap()],
+            )
+            .expect("append escaped backslash path");
+            let ignored = Command::new("git")
+                .arg("-C")
+                .arg(&project.0)
+                .args([
+                    "check-ignore",
+                    "--no-index",
+                    "-q",
+                    "--",
+                    literal_backslash_path,
+                ])
+                .status()
+                .expect("check literal backslash filename");
+            assert!(ignored.success());
+        }
+    }
+
+    #[test]
+    fn git_add_excludes_sensitive_paths_literally() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let project = TemporaryGitProject::new();
+        run_simple(&project.0, &["init"]).expect("initialize isolated test repository");
+        fs::write(project.0.join(".gitignore"), ".env\n.env.*\n")
+            .expect("write standard sensitive-file ignore rules");
+        fs::write(project.0.join(".env"), "secret").expect("write sensitive file");
+        let injected_name = ".env.secret\n!.env";
+        fs::write(project.0.join(injected_name), "not staged").expect("write unusual filename");
+        fs::write(project.0.join(".npmrc"), "authToken=secret").expect("write sensitive config");
+        fs::write(project.0.join("README.txt"), "safe").expect("write safe file");
+
+        let protected = vec![injected_name.to_string(), ".npmrc".to_string()];
+        let excluded = git_add_exclusions(&project.0, &protected).expect("filter already ignored paths");
+        assert_eq!(excluded, vec![".npmrc"]);
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&project.0)
+            .args(git_add_args(&excluded))
+            .output()
+            .expect("stage safe files with Git pathspec exclusions");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+
+        let staged = run_simple(&project.0, &["ls-files", "-z"]).expect("list staged files");
+        let staged_paths: Vec<&[u8]> = staged.split(|byte| *byte == 0).filter(|path| !path.is_empty()).collect();
+        assert!(staged_paths.contains(&b"README.txt".as_slice()));
+        assert!(!staged_paths.contains(&b".env".as_slice()));
+        assert!(!staged_paths.contains(&b".npmrc".as_slice()));
+        assert!(!staged_paths.contains(&injected_name.as_bytes()));
+    }
+
+    #[test]
+    fn secure_staging_rejects_non_utf8_git_paths_instead_of_lossy_matching() {
+        assert!(require_utf8_git_path(b"ordinary-file.txt").is_ok());
+        let error = require_utf8_git_path(b"secret-\xff.env").expect_err("non-UTF8 path must fail closed");
+        assert!(error.starts_with("GIT_UNSUPPORTED_PATH_ENCODING:"));
+    }
+
+    #[test]
+    fn tracked_sensitive_files_are_reported_without_changing_the_index() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let project = TemporaryGitProject::new();
+        run_simple(&project.0, &["init"]).expect("initialize isolated test repository");
+        run_simple(&project.0, &["config", "user.name", "Security Test"])
+            .expect("configure isolated test identity");
+        run_simple(&project.0, &["config", "user.email", "security-test@example.invalid"])
+            .expect("configure isolated test email");
+        fs::write(project.0.join(".env"), "dummy-secret").expect("write dummy sensitive file");
+        let add_output = Command::new("git")
+            .arg("-C")
+            .arg(&project.0)
+            .args(["add", "-f", "--", ".env"])
+            .output()
+            .expect("force-stage the fixture to simulate an already tracked file");
+        assert!(add_output.status.success());
+        run_simple(&project.0, &["commit", "-m", "fixture"])
+            .expect("commit isolated test fixture");
+        fs::write(project.0.join(".env"), "updated-dummy-secret")
+            .expect("modify tracked sensitive file");
+        let index_before = run_simple(&project.0, &["ls-files", "-s"])
+            .expect("capture index before protection check");
+        let status_before = run_simple(&project.0, &["status", "--porcelain"])
+            .expect("capture worktree status before protection check");
+
+        let cancel = AtomicBool::new(false);
+        let protection =
+            prepare_tracked_exclusions(&project.0, &cancel).expect("inspect tracked files");
+        let error = reject_tracked_protected_content(&protection)
+            .expect_err("tracked sensitive file must require explicit user action");
+        assert!(error.contains(".env"));
+
+        let tracked = run_simple(&project.0, &["ls-files", "-z"]).expect("inspect Git index");
+        assert!(tracked.split(|byte| *byte == 0).any(|path| path == b".env"));
+        assert_eq!(
+            run_simple(&project.0, &["ls-files", "-s"]).expect("re-read Git index"),
+            index_before
+        );
+        assert_eq!(
+            run_simple(&project.0, &["status", "--porcelain"])
+                .expect("re-read worktree status"),
+            status_before
+        );
+        assert!(!project.0.join(".gitignore").exists());
     }
 
     #[test]

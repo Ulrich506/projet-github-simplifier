@@ -5,6 +5,10 @@ export type OperationErrorCategory =
   | "GITHUB_RATE_LIMIT"
   | "REPOSITORY_NOT_FOUND"
   | "REPOSITORY_ALREADY_EXISTS"
+  | "NOT_A_GIT_REPOSITORY"
+  | "INVALID_WORKING_DIRECTORY"
+  | "INVALID_PATH"
+  | "CLONE_DESTINATION_ERROR"
   | "GIT_NOT_INSTALLED"
   | "LOCAL_PROJECT_ERROR"
   | "GIT_OPERATION_ERROR"
@@ -123,6 +127,18 @@ function factsFromError(error: unknown, token: string | null): ErrorFacts {
 function classify(facts: ErrorFacts): { category: OperationErrorCategory; retryable: boolean } {
   const message = facts.message.toLowerCase();
   const evidence = `${message} ${facts.code.toLowerCase()}`;
+  if (/NOT_A_GIT_REPOSITORY|GIT_REPOSITORY_INVALID|fatal: not in a git directory|fatal: not a git repository/i.test(message)) {
+    return { category: "NOT_A_GIT_REPOSITORY", retryable: false };
+  }
+  if (/INVALID_WORKING_DIRECTORY/i.test(message)) {
+    return { category: "INVALID_WORKING_DIRECTORY", retryable: false };
+  }
+  if (/INVALID_PATH/i.test(message)) {
+    return { category: "INVALID_PATH", retryable: false };
+  }
+  if (/CLONE_DESTINATION_ERROR|CLONE_VERIFICATION_FAILED|CLONE_CLEANUP_FAILED|could not create work tree dir|destination path .* already exists/i.test(message)) {
+    return { category: "CLONE_DESTINATION_ERROR", retryable: false };
+  }
   if (/GIT_OPERATION_TIMEOUT|timed out|timeout|deadline exceeded/i.test(facts.message)) {
     return { category: "TIMEOUT_ERROR", retryable: true };
   }
@@ -239,6 +255,26 @@ export function messageDiagnostic(
       fr: "Un dépôt portant déjà ce nom existe. Choisissez un autre nom ou associez le dépôt existant.",
       en: "A repository with this name already exists. Choose another name or link the existing repository.",
       es: "Ya existe un repositorio con ese nombre. Elige otro nombre o vincula el repositorio existente.",
+    },
+    NOT_A_GIT_REPOSITORY: {
+      fr: "Git ne reconnaît pas ce dossier comme un dépôt valide. Les fichiers locaux ont été conservés; vérifiez le dossier ou ses métadonnées Git.",
+      en: "Git does not recognize this folder as a valid repository. Local files were preserved; check the folder or its Git metadata.",
+      es: "Git no reconoce esta carpeta como un repositorio válido. Se conservaron los archivos locales; revisa la carpeta o sus metadatos Git.",
+    },
+    INVALID_WORKING_DIRECTORY: {
+      fr: "Le dossier de travail est introuvable ou inaccessible. Vérifiez le chemin et les permissions.",
+      en: "The working directory is missing or inaccessible. Check the path and permissions.",
+      es: "El directorio de trabajo no existe o no es accesible. Comprueba la ruta y los permisos.",
+    },
+    INVALID_PATH: {
+      fr: "Le chemin fourni n’est pas valide pour cette opération.",
+      en: "The supplied path is not valid for this operation.",
+      es: "La ruta indicada no es válida para esta operación.",
+    },
+    CLONE_DESTINATION_ERROR: {
+      fr: "Le clonage ne peut pas utiliser cette destination. Vérifiez qu’elle n’existe pas déjà et que son dossier parent est accessible.",
+      en: "The clone cannot use this destination. Check that it does not already exist and that its parent folder is accessible.",
+      es: "No se puede clonar en este destino. Comprueba que no exista ya y que su carpeta superior sea accesible.",
     },
     GIT_NOT_INSTALLED: {
       fr: "Git est introuvable sur cet ordinateur. Vérifiez son installation et sa configuration.",

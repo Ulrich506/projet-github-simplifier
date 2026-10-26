@@ -678,7 +678,7 @@ export default function App() {
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       await verifierSessionGitHub();
       operationStep = "initialize_local_git";
-      if (!analysis?.hasExistingGit) await initialiserDepot(directory);
+      await initialiserDepot(directory);
       operationStep = "create_github_repository";
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       const remote = await creerOuRecupererDepot(token, {
