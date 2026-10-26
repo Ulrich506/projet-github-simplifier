@@ -9,8 +9,12 @@ interface OptionsCreationDepot {
 }
 
 function creerClientGitHub(token: string) {
+  const accessToken = token.trim();
+  if (!accessToken) {
+    throw new Error("Connecte-toi à GitHub avant cette opération.");
+  }
   return new Octokit({
-    auth: token,
+    auth: accessToken,
     userAgent: "GitHub-Simplifie/1.0",
     request: {
       fetch: (url: string, opts?: RequestInit) => {
@@ -59,17 +63,6 @@ export async function creerOuRecupererDepot(
 ) {
   const octokit = creerClientGitHub(token);
 
-  const login = await obtenirUtilisateurConnecte(token);
-  try {
-    await octokit.repos.get({ owner: login, repo: nom });
-    throw new Error(
-      `Le dépôt « ${nom} » existe déjà. Associe-le explicitement à l’étape « Sélection & association » au lieu de créer un dépôt.`
-    );
-  } catch (err) {
-    const status = (err as { status?: number }).status;
-    if (status !== 404) throw err;
-  }
-
   try {
     const { data } = await octokit.repos.createForAuthenticatedUser({
       name: nom,
@@ -82,7 +75,7 @@ export async function creerOuRecupererDepot(
     const status = (err as { status?: number }).status;
     if (status === 422) {
       throw new Error(
-        `GitHub n’a pas créé le dépôt « ${nom} ». Vérifie son nom et qu’il n’existe pas déjà sous un autre propriétaire.`
+        `GitHub n’a pas créé le dépôt « ${nom} ». Vérifie son nom et qu’un dépôt portant ce nom n’existe pas déjà.`
       );
     }
     throw err;

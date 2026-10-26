@@ -220,8 +220,8 @@ export const translations: Record<"fr" | "en", Translations> = {
     },
     sensitiveStep: {
       noProjectSelected: "Choisis un dossier dans l’onglet « Projet » pour afficher les fichiers à contrôler.",
-      warningTitle: "Vérifie les fichiers avant publication",
-      warningDesc: "Le contrôle signale les noms de fichiers sensibles les plus courants (.env, clés privées, tokens). Relis la liste avant de publier.",
+      warningTitle: "Protection automatique des fichiers sensibles",
+      warningDesc: "Les fichiers sensibles sont automatiquement exclus et retirés du suivi Git avant la publication. Leur contenu reste localement sur votre machine.",
       colFile: "Fichier détecté",
       colAction: "État Git & action",
       noSensitiveDetected: "Aucun nom de fichier sensible connu détecté. Vérifie quand même manuellement tes fichiers avant la publication.",
@@ -382,8 +382,8 @@ export const translations: Record<"fr" | "en", Translations> = {
     },
     sensitiveStep: {
       noProjectSelected: "Select a folder in the 'Project' tab to display files to inspect.",
-      warningTitle: "Check files before publishing",
-      warningDesc: "This check flags the most common sensitive file patterns (.env, private keys, tokens). Please verify carefully before publishing.",
+      warningTitle: "Automatic protection for sensitive files",
+      warningDesc: "Sensitive files are automatically excluded and removed from Git tracking before publishing. Their content stays on your local machine.",
       colFile: "Detected File",
       colAction: "Git State & Action",
       noSensitiveDetected: "No common sensitive files detected. Still, please review your files manually before publishing.",
@@ -503,7 +503,7 @@ export function getTranslations(lang: Language): Translations {
       headers: { ...english.headers, step1Title: "Seleccionar proyecto", step1Desc: "Elige una carpeta local para analizar o sincronizar.", step2Title: "Revisión de seguridad", step2Desc: "Revisa los archivos sensibles antes de publicarlos.", step3Title: "Sincronizar proyecto", step3Desc: "Actualiza el repositorio sin sobrescribir su historial.", step4Title: "Clonar repositorio", step4Desc: "Clona en una carpeta nueva sin sobrescribir archivos.", badgeLinked: "Repositorio vinculado", badgeGit: "Git detectado", badgeFolder: "Carpeta seleccionada" },
       zoneDepot: { ...english.zoneDepot, titleDefault: "Arrastra aquí una carpeta de proyecto", titleUpdate: "Suelta aquí el proyecto que quieres actualizar", subtitle: "Las dependencias y carpetas de compilación se omiten automáticamente.", browseBtn: "Elegir carpeta", dialogError: "No se pudo abrir el selector de carpetas." },
       projectStep: { ...english.projectStep, selectedFolder: "Carpeta seleccionada", localPathLabel: "Ruta local", filesCount: "archivos", remoteUrlLabel: "URL del repositorio GitHub", remoteUrlPlaceholder: "https://github.com/cuenta/proyecto.git", saveRemoteBtn: "Guardar URL", updateRemoteBtn: "Actualizar URL", folderAccess: "Acceso a la carpeta", folderAccessGranted: "Acceso concedido", folderAccessDesc: "El acceso se limita a la carpeta elegida.", gitRootTitle: "Estado de Git:", gitRootPresent: "Hay un repositorio Git en la carpeta.", gitRootAbsent: "Git se inicializará al publicar por primera vez.", continueBtn: "Revisar archivos y seguridad" },
-      sensitiveStep: { ...english.sensitiveStep, noProjectSelected: "Selecciona una carpeta en Proyecto.", warningTitle: "Revisa los archivos antes de publicar", warningDesc: "Se detectan nombres comunes de archivos sensibles, como .env, claves y tokens.", colFile: "Archivo detectado", colAction: "Estado y acción", noSensitiveDetected: "No se detectaron nombres sensibles conocidos.", trackedDanger: "Git ya sigue este archivo; ignorarlo no elimina su historial.", untrackedWarn: "Archivo sospechoso; se añadirá a .gitignore.", untrackBtn: "Dejar de seguir e ignorar", ignoreBtn: "Añadir a .gitignore", backBtn: "← Volver", continueBtn: "Continuar" },
+      sensitiveStep: { ...english.sensitiveStep, noProjectSelected: "Selecciona una carpeta en Proyecto.", warningTitle: "Protección automática de archivos sensibles", warningDesc: "Los archivos sensibles se excluyen automáticamente antes de publicar y se eliminan del seguimiento de Git. Su contenido se queda en tu equipo.", colFile: "Archivo detectado", colAction: "Estado y acción", noSensitiveDetected: "No se detectaron nombres sensibles conocidos.", trackedDanger: "Git ya sigue este archivo; ignorarlo no elimina su historial.", untrackedWarn: "Archivo sospechoso; se añadirá a .gitignore.", untrackBtn: "Dejar de seguir e ignorar", ignoreBtn: "Añadir a .gitignore", backBtn: "← Volver", continueBtn: "Continuar" },
       syncStep: { ...english.syncStep, noProjectSelected: "Selecciona una carpeta en Proyecto.", firstPublishTitle: "Publicar este proyecto por primera vez", firstPublishDesc: "Se creará un repositorio privado de forma predeterminada.", repoNamePlaceholder: "nombre-del-repositorio", privateRepoCheckbox: "Privado", publicRepoLabel: "Público", createAndPublishBtn: "Crear y publicar", branchLabel: "Rama:", statClean: "Sin cambios", statLocalState: "Estado local", statLocalChanges: "Cambios locales", actionsTitle: "Actualizar proyecto en GitHub", actionsDesc: "Los cambios locales se guardan y envían sin reescribir el historial remoto.", commitMsgPlaceholder: "Mensaje del commit", publishBtn: "Actualizar proyecto", recentHistoryTitle: "Historial reciente", noCommits: "Todavía no hay commits.", unnamedCommit: "Commit sin mensaje" },
       cloneStep: { ...english.cloneStep, title: "Clonar repositorio", desc: "Los repositorios públicos se pueden clonar sin iniciar sesión. Inicia sesión para repositorios privados.", badge: "GitHub HTTPS", urlLabel: "URL del repositorio GitHub", urlPlaceholder: "https://github.com/organizacion/proyecto.git", parentLabel: "Carpeta de destino", parentPlaceholder: "Elegir carpeta de destino…", browseBtn: "Examinar", subfolderLabel: "Carpeta que se creará", selectPrompt: "Selecciona una URL y una carpeta", warningNotice: "El clonado se detiene si la carpeta de destino ya existe.", cancelBtn: "Cancelar", cloneBtn: "Clonar proyecto" },
       common: { ...english.common, loading: "Cargando…", analyzingFolder: "Analizando carpeta…", inProgress: "Operación en curso…", close: "Cerrar", dismiss: "Ocultar" },
@@ -554,6 +554,36 @@ export function getTranslations(lang: Language): Translations {
   return english;
 }
 
+function extractErrorMessage(error: unknown): string {
+  const messages: string[] = [];
+  const visited = new Set<object>();
+
+  function visit(value: unknown, depth: number): void {
+    if (depth > 4 || value == null) return;
+    if (typeof value === "string") {
+      if (value.trim()) messages.push(value.trim());
+      return;
+    }
+    if (typeof value !== "object" || visited.has(value)) return;
+    visited.add(value);
+
+    const record = value as Record<string, unknown>;
+    for (const key of ["message", "code", "status", "stderr", "error", "cause"]) {
+      visit(record[key], depth + 1);
+    }
+
+    const response = record.response;
+    if (response && typeof response === "object") {
+      const responseRecord = response as Record<string, unknown>;
+      visit(responseRecord.status, depth + 1);
+      visit(responseRecord.data, depth + 1);
+    }
+  }
+
+  visit(error, 0);
+  return [...new Set(messages)].join(" ");
+}
+
 /**
  * Translates any raw error (Git, Tauri, network, or application) into a user-friendly string
  * in the chosen language.
@@ -561,7 +591,15 @@ export function getTranslations(lang: Language): Translations {
 export function translateError(error: unknown, lang: Language): string {
   const french = lang === "fr";
   const spanish = lang === "es";
-  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const message = extractErrorMessage(error);
+
+  if (/GIT_HTTP_BODY_TOO_LARGE/i.test(message)) {
+    return french
+      ? "L’envoi Git est trop volumineux pour la mémoire sûre du client HTTP de l’application. Les dossiers et fichiers volumineux sont ignorés ; réduisez les changements envoyés ou découpez-les en plusieurs commits."
+      : spanish
+        ? "El envío de Git es demasiado grande para la memoria segura del cliente HTTP. Se excluyen las carpetas y archivos grandes; reduce los cambios o divídelos en varios commits."
+        : "The Git upload is too large for the HTTP client’s safe memory limit. Large folders and files are excluded; reduce the changes or split them into smaller commits.";
+  }
 
   if (message === "SYNC_OFFLINE_LOCAL_COMMIT_SAVED") {
     return french
@@ -601,14 +639,14 @@ export function translateError(error: unknown, lang: Language): string {
         ? "No se encuentra el repositorio de GitHub o no tienes acceso. Comprueba la URL y los permisos de tu cuenta."
         : "GitHub repository not found or inaccessible. Check the URL and your account permissions, then try again.";
   }
-  if (/bad credentials|\b401\b|unauthorized|authentication failed/i.test(message)) {
+  if (/bad credentials|\b401\b|unauthorized|authentication failed|could not authenticate/i.test(message)) {
     return french
       ? "Connexion à GitHub impossible. Vérifiez votre session dans l’application, puis reconnectez-vous si nécessaire."
       : spanish
         ? "No se pudo iniciar sesión en GitHub. Comprueba la sesión de la aplicación y vuelve a conectarte si es necesario."
         : "Could not authenticate with GitHub. Check your app session and sign in again if needed.";
   }
-  if (/failed to fetch|network error|cannot contact|dns|timeout|connection reset|network request failed/i.test(message)) {
+  if (/failed to fetch|network error|cannot contact|dns|timeout|connection reset|network request failed|connection refused|offline/i.test(message)) {
     return french
       ? "Impossible de contacter GitHub. Vérifiez votre connexion Internet et réessayez."
       : spanish
@@ -656,7 +694,7 @@ export function translateError(error: unknown, lang: Language): string {
         : "The commit message cannot be empty.";
   }
 
-  if (!error) {
+  if (!message) {
     return french
       ? "Une erreur inattendue est survenue. Réessayez. Si le problème persiste, vérifiez l’accès au projet et à GitHub."
       : spanish
@@ -664,9 +702,30 @@ export function translateError(error: unknown, lang: Language): string {
         : "An unexpected error occurred. Retry and check access to the project and GitHub.";
   }
 
-  const rawMessage = error instanceof Error ? error.message : String(error);
+  const rawMessage = message;
   if (lang === "es") {
     const spanish = lang === "es";
+    if (/GIT_OPERATION_CANCELLED/i.test(rawMessage)) {
+      return "Operación Git cancelada. No se eliminaron los archivos del proyecto.";
+    }
+    if (/GIT_OPERATION_TIMEOUT/i.test(rawMessage)) {
+      return "La operación Git superó el límite de 15 minutos. Comprueba la conexión y el estado del repositorio e inténtalo de nuevo.";
+    }
+    if (/GIT_OPERATION_BUSY/i.test(rawMessage)) {
+      return "Ya hay una operación Git en curso. Espera a que termine antes de iniciar otra.";
+    }
+    if (/GIT_TOO_MANY_(?:SENSITIVE|LARGE)_FILES/i.test(rawMessage)) {
+      return "Hay demasiados archivos para excluir en una sola operación. Divide el proyecto o añade reglas a .gitignore e inténtalo de nuevo.";
+    }
+    if (/GIT_PREVIEW_TOO_LARGE/i.test(rawMessage)) {
+      return "Vista previa no disponible: el archivo supera los 512 KB.";
+    }
+    if (/GIT_PREVIEW_BINARY/i.test(rawMessage)) {
+      return "Vista previa no disponible: el archivo parece binario.";
+    }
+    if (/GIT_PREVIEW_INVALID_UTF8/i.test(rawMessage)) {
+      return "Vista previa no disponible: el archivo no es texto UTF-8.";
+    }
     if (/forbidden path|allow-lstat/i.test(rawMessage)) {
       return spanish
         ? "No se permite acceder a esta carpeta. Selecciónala con el selector de carpetas de la aplicación."
@@ -708,7 +767,7 @@ export function translateError(error: unknown, lang: Language): string {
     return "Se produjo un error al realizar la operación. Vuelve a intentarlo y comprueba los permisos del proyecto y de GitHub.";
   }
 
-  // 1. Empty remote / null ref.length error (isomorphic-git bug on empty repos)
+  // Empty remote or repository without a first commit.
   if (
     rawMessage === "EMPTY_REMOTE" ||
     /ref\.length|null is not an object \(evaluating 'ref\.length'\)|cannot read properties of null \(reading 'length'\)/i.test(rawMessage)
@@ -805,9 +864,7 @@ export function translateError(error: unknown, lang: Language): string {
       : rawMessage.replace("existe déjà", "already exists on GitHub");
   }
 
-  // 14b. HTTP 403 Forbidden (isomorphic-git HttpError wrapping GitHub's 403)
-  // Causes : User-Agent absent (WAF), mauvais format auth, branche protégée,
-  //          ou droits d'écriture insuffisants sur le dépôt.
+  // 14b. GitHub rejected the authenticated native Git request.
   if (/403|forbidden/i.test(rawMessage)) {
     return lang === "fr"
       ? "Accès refusé par GitHub. Vérifiez vos droits d’écriture sur ce dépôt et les règles de protection de la branche."
@@ -815,10 +872,55 @@ export function translateError(error: unknown, lang: Language): string {
   }
 
   // 14c. User canceled / aborted auth flow
-  if (/usercanceled|the operation was canceled|cancelled|canceled/i.test(rawMessage)) {
+  if (
+    !/GIT_OPERATION_CANCELLED/i.test(rawMessage) &&
+    /usercanceled|the operation was canceled|cancelled|canceled/i.test(rawMessage)
+  ) {
     return lang === "fr"
       ? "La connexion GitHub a été annulée ou interrompue. Reprenez l’authentification et confirmez l’ouverture dans votre navigateur."
       : "The GitHub sign-in flow was canceled or interrupted. Retry the authentication and confirm the browser flow before continuing.";
+  }
+
+  if (/GIT_OPERATION_CANCELLED/i.test(rawMessage)) {
+    return lang === "fr"
+      ? "Opération Git annulée. Les fichiers du projet n’ont pas été supprimés."
+      : "Git operation canceled. Project files were not deleted.";
+  }
+
+  if (/GIT_OPERATION_TIMEOUT/i.test(rawMessage)) {
+    return lang === "fr"
+      ? "L’opération Git a dépassé le délai maximal de 15 minutes. Vérifiez la connexion et l’état du dépôt, puis réessayez."
+      : "The Git operation exceeded the 15-minute limit. Check your connection and repository state, then retry.";
+  }
+
+  if (/GIT_OPERATION_BUSY/i.test(rawMessage)) {
+    return lang === "fr"
+      ? "Une opération Git est déjà en cours. Attendez sa fin avant d’en lancer une autre."
+      : "A Git operation is already running. Wait for it to finish before starting another.";
+  }
+
+  if (/GIT_TOO_MANY_(?:SENSITIVE|LARGE)_FILES/i.test(rawMessage)) {
+    return lang === "fr"
+      ? "Trop de fichiers à exclure en une seule opération. Séparez le projet ou ajoutez des exclusions au .gitignore, puis réessayez."
+      : "Too many files to exclude in one operation. Split the project or add .gitignore rules, then retry.";
+  }
+
+  if (/GIT_PREVIEW_TOO_LARGE/i.test(rawMessage)) {
+    return lang === "fr"
+      ? "Aperçu indisponible : le fichier dépasse 512 Ko."
+      : "Preview unavailable: the file is larger than 512 KB.";
+  }
+
+  if (/GIT_PREVIEW_BINARY/i.test(rawMessage)) {
+    return lang === "fr"
+      ? "Aperçu indisponible : ce fichier semble binaire."
+      : "Preview unavailable: this appears to be a binary file.";
+  }
+
+  if (/GIT_PREVIEW_INVALID_UTF8/i.test(rawMessage)) {
+    return lang === "fr"
+      ? "Aperçu indisponible : le fichier n’est pas un texte UTF-8."
+      : "Preview unavailable: the file is not UTF-8 text.";
   }
 
   // 14. Network / offline error

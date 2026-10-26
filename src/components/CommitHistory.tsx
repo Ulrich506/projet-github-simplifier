@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { UIEvent } from "react";
 import { X } from "lucide-react";
 import type { Language } from "../i18n";
 
@@ -21,7 +22,7 @@ const ROW_HEIGHT = 48;
 const VIEWPORT_HEIGHT = 288;
 const OVERSCAN = 3;
 
-export function CommitHistory({
+function CommitHistoryView({
   commits,
   hiddenCommits,
   language,
@@ -30,10 +31,25 @@ export function CommitHistory({
   onHide,
 }: Props) {
   const [scrollTop, setScrollTop] = useState(0);
+  const scrollFrame = useRef<number | null>(null);
+  const pendingScrollTop = useRef(0);
+  const hidden = useMemo(() => new Set(hiddenCommits), [hiddenCommits]);
   const visibleCommits = useMemo(
-    () => commits.filter((commit) => !hiddenCommits.includes(commit.oid)),
-    [commits, hiddenCommits]
+    () => commits.filter((commit) => !hidden.has(commit.oid)),
+    [commits, hidden]
   );
+  const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    pendingScrollTop.current = event.currentTarget.scrollTop;
+    if (scrollFrame.current !== null) return;
+    scrollFrame.current = window.requestAnimationFrame(() => {
+      scrollFrame.current = null;
+      setScrollTop(pendingScrollTop.current);
+    });
+  }, []);
+
+  useEffect(() => () => {
+    if (scrollFrame.current !== null) window.cancelAnimationFrame(scrollFrame.current);
+  }, []);
   const firstVisible = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
   const endVisible = Math.min(
     visibleCommits.length,
@@ -45,7 +61,7 @@ export function CommitHistory({
     <div
       className="overflow-auto"
       style={{ maxHeight: VIEWPORT_HEIGHT }}
-      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      onScroll={handleScroll}
       role="region"
       aria-label={language === "fr" ? "Historique récent" : language === "es" ? "Historial reciente" : "Recent history"}
     >
@@ -83,3 +99,5 @@ export function CommitHistory({
     </div>
   );
 }
+
+export const CommitHistory = memo(CommitHistoryView);

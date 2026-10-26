@@ -1,0 +1,191 @@
+# MISSION : CRÉER UN ASSISTANT IA POUR LES DÉVELOPPEURS DANS GSIMPLIFIÉ
+
+## 1. Rôle
+
+Agis comme un ingénieur logiciel senior spécialisé en intelligence artificielle, développement full-stack, React, TypeScript, Tauri, Rust, intégration d'API IA et sécurité applicative.
+
+Tu dois analyser le code source existant de Gsimplifié et implémenter un assistant IA personnalisé destiné à aider les développeurs à comprendre, présenter et promouvoir leurs projets logiciels.
+
+Ne crée pas une simple maquette. L'objectif est de développer une fonctionnalité réellement utilisable, intégrée à l'application existante.
+
+## 2. Objectif fonctionnel
+
+Ajouter un assistant IA accessible depuis l'interface de Gsimplifié.
+
+L'assistant doit permettre aux développeurs de :
+
+- Poser des questions sur leur projet.
+- Obtenir une présentation professionnelle de leur application.
+- Générer ou améliorer leur README.
+- Préparer des publications pour les réseaux sociaux.
+- Définir un public cible et des objectifs de promotion.
+- Générer un plan de lancement.
+- Préparer un argumentaire destiné aux clients ou aux investisseurs.
+- Conserver et retrouver leurs conversations.
+- Modifier les contenus générés avant de les utiliser.
+
+## 3. Audit préalable
+
+Avant toute modification, inspecte le projet et identifie :
+
+- Le framework frontend et sa version.
+- L'architecture backend.
+- L'utilisation éventuelle de Tauri et de Rust.
+- Le système d'authentification.
+- La base de données existante.
+- Le système de gestion des projets et des dépôts Git.
+- Les conventions de code.
+- Les mécanismes existants d'appel aux services externes.
+
+Adapte l'implémentation à l'architecture réelle.
+
+Ne remplace pas les technologies existantes sans justification.
+
+## 4. Architecture IA
+
+Crée une architecture modulaire composée des éléments suivants :
+
+### AI Assistant Interface
+
+Interface conversationnelle intégrée au design existant.
+
+Fonctionnalités :
+- Affichage des messages.
+- Saisie des demandes.
+- Indicateur de génération.
+- Gestion des erreurs.
+- Historique des conversations.
+- Possibilité de copier et de modifier les résultats.
+- Actions rapides pour les tâches marketing.
+
+### AI Provider Service
+
+Service responsable des communications avec le modèle IA.
+
+Exigences :
+- Fournisseur configurable.
+- Clés API protégées.
+- Gestion des erreurs et des délais d'attente.
+- Limites d'utilisation.
+- Prise en charge des réponses progressives si le fournisseur et l'architecture le permettent.
+- Séparation entre l'interface utilisateur et le fournisseur IA.
+
+Ne place aucune clé API secrète directement dans le code frontend.
+
+### Project Context Engine
+
+Composant chargé de préparer le contexte du projet.
+
+Il doit :
+- Récupérer les métadonnées autorisées.
+- Identifier les fichiers de documentation utiles.
+- Résumer les informations pertinentes.
+- Exclure les secrets et les données confidentielles.
+- Limiter la quantité de données transmise au modèle.
+- Permettre à l'utilisateur de contrôler l'accès au contenu de son projet.
+
+Ne charge jamais intégralement un dépôt volumineux uniquement pour construire le contexte de l'IA.
+
+### Marketing Generator
+
+Crée un service spécialisé dans la génération de contenus marketing.
+
+Il doit prendre en charge :
+- Les descriptions courtes.
+- Les présentations détaillées.
+- Les publications sociales.
+- Les fiches portfolio.
+- Les argumentaires commerciaux.
+- Les plans de promotion.
+- Les propositions de lancement.
+
+Les contenus doivent s'appuyer sur des informations confirmées ou clairement identifiées comme hypothèses.
+
+### Conversation Manager
+
+Permet de :
+- Créer une conversation.
+- Enregistrer les messages.
+- Retrouver les conversations.
+- Associer une conversation à un projet lorsque l'utilisateur le souhaite.
+- Supprimer les conversations.
+- Isoler les données de chaque utilisateur.
+
+## 5. Interface utilisateur
+
+Intègre un assistant moderne, responsive et cohérent avec l'identité visuelle de Gsimplifié.
+
+Prévois :
+- Un accès depuis la navigation principale.
+- Une page ou un panneau de conversation.
+- Des suggestions de tâches.
+- Une sélection du projet concerné.
+- Un aperçu des contenus générés.
+- Des actions pour copier, modifier et enregistrer.
+- Des états de chargement et d'erreur.
+- Une interface accessible au clavier.
+
+Ne surcharge pas l'interface avec des animations inutiles.
+
+Préserve les performances de l'application et virtualise les historiques volumineux si nécessaire.
+
+## 6. Sécurité et confidentialité
+
+Applique les règles suivantes :
+
+- Ne jamais exposer les clés secrètes côté client.
+- Authentifier les requêtes lorsque l'application dispose d'un système de comptes.
+- Vérifier les permissions sur chaque projet.
+- Isoler les conversations entre utilisateurs.
+- Limiter la taille des requêtes.
+- Protéger les endpoints contre les abus.
+- Prévoir des quotas d'utilisation.
+- Éviter l'enregistrement des secrets dans les journaux.
+- Demander une autorisation explicite avant d'analyser des fichiers sensibles.
+- Ne jamais publier un contenu sans confirmation de l'utilisateur.
+
+## 7. Intégration des publications
+
+Dans un premier temps, permettre de préparer et de prévisualiser les publications.
+
+Prévoir une architecture extensible pour connecter ultérieurement des plateformes externes au moyen de leurs API officielles.
+
+Ne simule pas une publication réussie lorsqu'aucune publication réelle n'a été effectuée.
+
+## 8. Tests
+
+Vérifie :
+- La configuration du fournisseur IA.
+- La gestion des erreurs.
+- L'absence de fuite de clés API.
+- L'isolation des conversations.
+- La génération des contenus.
+- Le comportement avec un projet sans documentation.
+- Le comportement avec un dépôt volumineux.
+- Les limites d'utilisation.
+- La réactivité de l'interface.
+- La compilation et les tests disponibles.
+
+## 9. Méthode de travail
+
+Procède par étapes :
+
+1. Audit du code existant.
+2. Proposition d'une architecture compatible.
+3. Implémentation du service IA.
+4. Création de l'interface conversationnelle.
+5. Intégration du contexte projet.
+6. Développement des fonctions marketing.
+7. Mise en place de la sécurité et des quotas.
+8. Tests et correction des problèmes.
+9. Rapport final.
+
+Modifie réellement les fichiers nécessaires. Ne te contente pas de produire du code théorique.
+
+Si une information essentielle manque, identifie-la avant d'effectuer une modification risquée.
+
+## 10. Résultat attendu
+
+Fournis une première version fonctionnelle de l'assistant IA, intégrée à Gsimplifié, permettant à un développeur de sélectionner son projet, de discuter avec l'assistant et de générer des contenus promotionnels qu'il peut vérifier et modifier.
+
+À la fin, documente les fichiers modifiés, les dépendances ajoutées, les configurations nécessaires, les tests exécutés et les fonctionnalités qui restent à implémenter.

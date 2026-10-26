@@ -1,26 +1,31 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { UIEvent } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { FileCode2, FileText, FolderTree } from "lucide-react";
-import { join } from "@tauri-apps/api/path";
-import { tauriFsBridge } from "../services/tauriFsBridge";
 import { translateError, type Language } from "../i18n";
 
 interface Props {
   directory: string;
   files: string[];
+  hasMore: boolean;
+  totalFileCount: number;
+  onLoadMore: () => Promise<void>;
   lang: Language;
 }
 
-const TAILLE_MAX_APERCU = 512 * 1024;
 const HAUTEUR_LIGNE = 32;
 const NOMBRE_LIGNES_VISIBLES = 20;
 
-export function ExplorateurFichiers({ directory, files, lang }: Props) {
+function ExplorateurFichiersView({ directory, files, hasMore, totalFileCount, onLoadMore, lang }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
   const readRequest = useRef(0);
+  const scrollFrame = useRef<number | null>(null);
+  const pendingScrollTop = useRef(0);
   const text = lang === "fr" ? {
     title: "Fichiers du dossier",
     selectPrompt: "Sélectionne un fichier pour le consulter (lecture seule).",
@@ -30,6 +35,8 @@ export function ExplorateurFichiers({ directory, files, lang }: Props) {
     empty: "Aucun fichier à afficher.",
     reading: "Lecture du fichier…",
     choose: "Choisis un fichier dans la liste pour afficher son contenu.",
+    loadMore: "Charger les fichiers suivants",
+    limitReached: "L’affichage est limité aux 2 000 premiers fichiers pour préserver la mémoire.",
   } : lang === "es" ? {
     title: "Archivos de la carpeta",
     selectPrompt: "Selecciona un archivo para verlo (solo lectura).",
@@ -39,6 +46,8 @@ export function ExplorateurFichiers({ directory, files, lang }: Props) {
     empty: "No hay archivos para mostrar.",
     reading: "Leyendo archivo…",
     choose: "Selecciona un archivo de la lista para ver su contenido.",
+    loadMore: "Cargar los siguientes archivos",
+    limitReached: "La vista se limita a los primeros 2 000 archivos para proteger la memoria.",
   } : {
     title: "Folder files",
     selectPrompt: "Select a file to preview it (read-only).",
@@ -48,6 +57,8 @@ export function ExplorateurFichiers({ directory, files, lang }: Props) {
     empty: "No files to display.",
     reading: "Reading file…",
     choose: "Choose a file from the list to preview its contents.",
+    loadMore: "Load next files",
+    limitReached: "Only the first 2,000 files are shown to preserve memory.",
   };
   const sortedFiles = useMemo(
     () => [...files].sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })),
@@ -68,6 +79,19 @@ export function ExplorateurFichiers({ directory, files, lang }: Props) {
     setScrollTop(0);
   }, [directory]);
 
+  useEffect(() => () => {
+    if (scrollFrame.current !== null) window.cancelAnimationFrame(scrollFrame.current);
+  }, []);
+
+  const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    pendingScrollTop.current = event.currentTarget.scrollTop;
+    if (scrollFrame.current !== null) return;
+    scrollFrame.current = window.requestAnimationFrame(() => {
+      scrollFrame.current = null;
+      setScrollTop(pendingScrollTop.current);
+    });
+  }, []);
+
   async function openFile(filepath: string) {
     const requestId = ++readRequest.current;
     setSelected(filepath);
@@ -75,31 +99,21 @@ export function ExplorateurFichiers({ directory, files, lang }: Props) {
     setError(null);
     setLoading(true);
     try {
-      const fullPath = await join(directory, ...filepath.split("/"));
-      const metadata = await tauriFsBridge.promises.stat(fullPath);
+      const result = await invoke<string>("git_read_file_preview", { dir: directory, filepath });
       if (requestId !== readRequest.current) return;
-      if (metadata.size > TAILLE_MAX_APERCU) {
-        setError(text.tooLarge);
-        return;
-      }
-      const result = await tauriFsBridge.promises.readFile(fullPath);
-      const bytes = typeof result === "string" ? new TextEncoder().encode(result) : new Uint8Array(result);
-      if (requestId !== readRequest.current) return;
-      if (bytes.length > TAILLE_MAX_APERCU) {
-        setError(text.tooLarge);
-        return;
-      }
-      if (bytes.some((byte) => byte === 0)) {
-        setError(text.binary);
-        return;
-      }
-      try {
-        setContent(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-      } catch {
-        setError(text.encoding);
-      }
+      setContent(result);
     } catch (cause) {
-      if (requestId === readRequest.current) setError(translateError(cause, lang));
+      if (requestId === readRequest.current) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setError(message.includes("GIT_PREVIEW_TOO_LARGE")
+          ? text.tooLarge
+          : message.includes("GIT_PREVIEW_BINARY")
+            ? text.binary
+            : message.includes("GIT_PREVIEW_INVALID_UTF8")
+              ? text.encoding
+              : translateError(cause, lang));
+      }
+
     } finally {
       if (requestId === readRequest.current) setLoading(false);
     }
@@ -119,24 +133,42 @@ export function ExplorateurFichiers({ directory, files, lang }: Props) {
       <div className="grid min-h-64 md:grid-cols-[minmax(12rem,0.8fr)_minmax(0,1.6fr)]">
         <div
           className="max-h-80 overflow-auto border-b border-slate-800 p-2 md:border-b-0 md:border-r"
-          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+          onScroll={handleScroll}
         >
           {sortedFiles.length ? (
-            <ul style={{ paddingTop: startIndex * HAUTEUR_LIGNE, paddingBottom: Math.max(0, sortedFiles.length - startIndex - visibleFiles.length) * HAUTEUR_LIGNE }}>
-              {visibleFiles.map((filepath) => (
-                <li key={filepath} style={{ height: HAUTEUR_LIGNE }}>
-                  <button
-                    type="button"
-                    onClick={() => void openFile(filepath)}
-                    className={`flex h-full w-full min-w-0 items-center gap-2 rounded px-2 text-left font-mono text-xs hover:bg-slate-800 ${selected === filepath ? "bg-orange-950/50 text-orange-200" : "text-slate-300"}`}
-                    title={filepath}
-                  >
-                    <FileCode2 size={14} className="shrink-0 text-slate-500" />
-                    <span className="truncate">{filepath}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul style={{ paddingTop: startIndex * HAUTEUR_LIGNE, paddingBottom: Math.max(0, sortedFiles.length - startIndex - visibleFiles.length) * HAUTEUR_LIGNE }}>
+                {visibleFiles.map((filepath) => (
+                  <li key={filepath} style={{ height: HAUTEUR_LIGNE }}>
+                    <button
+                      type="button"
+                      onClick={() => void openFile(filepath)}
+                      className={`flex h-full w-full min-w-0 items-center gap-2 rounded px-2 text-left font-mono text-xs hover:bg-slate-800 ${selected === filepath ? "bg-orange-950/50 text-orange-200" : "text-slate-300"}`}
+                      title={filepath}
+                    >
+                      <FileCode2 size={14} className="shrink-0 text-slate-500" />
+                      <span className="truncate">{filepath}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {hasMore && (
+                <button
+                  type="button"
+                  disabled={loadingMore}
+                  onClick={() => {
+                    setLoadingMore(true);
+                    void onLoadMore().finally(() => setLoadingMore(false));
+                  }}
+                  className="m-2 rounded border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {loadingMore ? text.reading : text.loadMore}
+                </button>
+              )}
+              {!hasMore && files.length < totalFileCount && (
+                <p className="m-2 text-xs text-slate-500">{text.limitReached}</p>
+              )}
+            </>
           ) : (
             <p className="p-3 text-sm text-slate-500">{text.empty}</p>
           )}
@@ -167,3 +199,5 @@ export function ExplorateurFichiers({ directory, files, lang }: Props) {
     </section>
   );
 }
+
+export const ExplorateurFichiers = memo(ExplorateurFichiersView);

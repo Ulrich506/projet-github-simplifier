@@ -103,6 +103,7 @@ export function useGitHubAuth() {
   }, []);
 
   const connecterAvecCompte = useCallback(async (login: string) => {
+    setEtat((current) => ({ ...current, enAttente: true, erreur: null }));
     try {
       const token = await invoke<string | null>("charger_jeton_github_compte", { login });
       if (!token) throw new Error("Aucune session enregistrée pour ce compte.");
@@ -111,10 +112,11 @@ export function useGitHubAuth() {
       setEtat({ ...ETAT_INITIAL, token, login: verifiedLogin });
       return true;
     } catch (error) {
-      setEtat({
-        ...ETAT_INITIAL,
+      setEtat((current) => ({
+        ...current,
+        enAttente: false,
         erreur: error instanceof Error ? error.message : "Impossible de réutiliser ce compte GitHub.",
-      });
+      }));
       return false;
     }
   }, []);

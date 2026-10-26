@@ -3,32 +3,34 @@
 **Date de l’analyse :** 23 octobre 2026  
 **Périmètre :** sources React/TypeScript, services Git/GitHub, configuration Tauri et documentation présentes à la racine du projet.
 
+> **Mise à jour technique :** les sections d’analyse initiale ci-dessous décrivent l’architecture avant la migration vers Git natif. Le backend a depuis été déplacé vers Rust/Tauri pour éviter les lectures complètes en mémoire; les recommandations historiques sont à relire avec la section « État après migration native » en fin de document.
+
 ## 1. Synthèse
 
 GitHub Simplifié est une application desktop construite avec Tauri 2, React et TypeScript. Elle vise à publier, mettre à jour et récupérer des dépôts GitHub sans exposer la ligne de commande à l’utilisateur. La séparation entre interface, services Git/GitHub et ponts natifs de fichiers/réseau est déjà bien amorcée.
 
-**État actuel :** le frontend TypeScript et le backend Rust compilent. Cela confirme que les sources sont cohérentes au niveau statique, mais ne valide pas les flux réels avec une session GitHub, un dossier local ou les opérations Git. Les tests Rust existent au sens où `cargo test` s’exécute, mais il ne trouve actuellement aucun test. Aucun script de test frontend n’est déclaré.
+**État après migration :** le frontend TypeScript et le backend Rust compilent; six tests unitaires Rust couvrent l’encodage d’authentification, le parsing de chemins Git, les exclusions générées, la détection de noms sensibles, le rejet des identifiants dans l’URL du remote et le découpage des pages d’analyse. Ces vérifications ne remplacent pas un essai Tauri réel avec un dépôt GitHub volumineux.
 
-**Conclusion :** le projet est une base MVP compilable, mais plusieurs actions annoncées ne sont pas encore utilisables de manière fiable. Les priorités sont d’associer explicitement un dépôt distant à son dossier local, de renforcer le traitement des fichiers sensibles, et de valider les flux « mettre à jour » et « récupérer » dans l’application Tauri.
+**Conclusion :** les opérations Git passent maintenant par le binaire Git natif lancé depuis Rust. Les parcours réels avec un compte GitHub, les limites de taille, l’annulation, et les systèmes Windows/macOS/Linux restent à éprouver en exécution.
 
 ## 2. Architecture et fonctions présentes
 
 - **Interface et parcours :** connexion, choix d’un dossier, analyse, sélection d’action, confirmation, progression et résultat sont répartis entre `src/App.tsx` et `src/components/`.
 - **Connexion GitHub :** le Device Flow est implémenté dans `src/services/githubAuth.ts`; l’état de connexion est géré par `src/hooks/useGitHubAuth.ts`.
 - **Appels à l’API GitHub :** création, recherche d’un dépôt existant et récupération des dépôts sont dans `src/services/githubService.ts`.
-- **Opérations Git :** initialisation, staging/commit, pull, push et clone sont centralisés dans `src/services/gitService.ts`.
-- **Accès disque :** `src/services/fileSystemUtils.ts` parcourt le dossier sélectionné; `src/services/tauriFsBridge.ts` adapte les fonctions du plugin FS pour isomorphic-git.
-- **Transport Git :** `src/services/tauriGitHttp.ts` utilise le plugin HTTP natif pour le transport Git.
-- **Permissions :** `src-tauri/capabilities/default.json` déclare les accès HTTP, fichiers, dialogues et shell utilisés par l’interface.
+- **Opérations Git :** `src/services/gitService.ts` appelle les commandes natives de `src-tauri/src/git_native.rs`; aucun moteur Git JavaScript ne charge l’arborescence ou les contenus pour préparer un commit.
+- **Analyse et aperçu :** l’analyse parcourt les répertoires de façon incrémentale et pagine les chemins; l’aperçu natif est limité à 512 Kio et vérifie que le chemin canonique reste dans le dossier du projet.
+- **Protection contre les gros dépôts :** les listes de chemins sont bornées, les dossiers générés sont exclus, les fichiers d’au moins 100 Mio sont exclus du nouvel index et ceux de 50 Mio ou plus sont signalés.
+- **Permissions :** les capacités Tauri ne déclarent plus d’accès général au système de fichiers; les opérations locales sont exécutées par les commandes natives validant le dossier fourni.
 
 ## 3. Ce qui fonctionne ou est correctement établi
 
 1. **Build frontend réussi.** `npm run build` exécute `tsc` puis Vite et termine avec succès. Le mode TypeScript strict est activé.
 2. **Vérification Rust réussie.** `cargo check --manifest-path src-tauri/Cargo.toml` termine avec succès.
-3. **Tests Rust exécutables.** `cargo test --manifest-path src-tauri/Cargo.toml` termine avec succès, mais rapporte zéro test.
+3. **Tests Rust réussis.** `cargo test --manifest-path src-tauri/Cargo.toml` exécute quatre tests unitaires.
 4. **Parcours nominal de publication présent dans le code.** L’application sait demander un dépôt GitHub, initialiser Git si nécessaire, préparer un `.gitignore`, committer, pousser puis vérifier la branche distante.
 5. **Contrôle de cohérence après publication.** Le code vérifie que la branche distante contient bien un commit avant d’afficher le résultat.
-6. **Utilisation d’API Tauri natives pour le système de fichiers et le transport Git.** C’est cohérent avec le besoin d’accéder aux vrais chemins disque depuis l’application desktop.
+6. **Git natif délégué à Rust.** Le statut est lu en flux et les résultats sont limités à 500 entrées par appel; les listes de fichiers conservées dans le frontend sont plafonnées.
 7. **Signaux utiles à l’utilisateur.** L’interface prévoit des écrans d’erreur, des messages de progression, un avertissement sur certains noms de fichiers sensibles et une confirmation du dépôt privé.
 8. **Configuration TypeScript stricte.** `strict`, `noUnusedLocals` et `noUnusedParameters` réduisent le risque d’erreurs statiques.
 
@@ -128,9 +130,9 @@ La racine contient les sources actives, tandis qu’un dossier `github-simplifie
 
 | Vérification | Résultat | Interprétation |
 |---|---|---|
-| `npm run build` | Réussie | TypeScript et Vite compilent; avertissement de chunk volumineux. |
+| `npm run build` | Réussie | TypeScript et Vite compilent; bundle JS actuel d’environ 414 kB minifié. |
 | `cargo check --manifest-path src-tauri/Cargo.toml` | Réussie | Le code Rust/Tauri compile dans l’environnement vérifié. |
-| `cargo test --manifest-path src-tauri/Cargo.toml` | Réussie, 0 test | Aucune régression fonctionnelle n’est couverte par les tests Rust actuels. |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | Réussie, 6 tests | Tests unitaires ciblés; les flux Tauri/GitHub réels ne sont pas couverts. |
 | Tests frontend | Non disponibles | Aucun script `test` déclaré dans `package.json`. |
 | Exécution réelle avec GitHub et sélection de fichiers | Non réalisée | Nécessite une validation manuelle ou des tests d’intégration avec environnement Tauri et compte GitHub. |
 
@@ -147,3 +149,18 @@ La racine contient les sources actives, tandis qu’un dossier `github-simplifie
 ## 7. Limites de ce rapport
 
 Cette analyse est statique, complétée par des builds et les tests présents. Elle ne certifie pas le comportement de l’application sur Windows/macOS/Linux, la validité de la configuration OAuth côté GitHub, ni le comportement exact du plugin FS sur tous les systèmes de fichiers. Les points concernant clone, CORS/transport API et conflits Git doivent être confirmés par des tests d’intégration sur les plateformes réellement distribuées.
+
+## 8. État après migration native mémoire
+
+- Les traitements Git (statut, staging, commit, synchronisation et clone) sont exécutés par le binaire Git via `std::process::Command`, sans isomorphic-git.
+- Le scan de fichiers et le statut Git sont traités en flux; les réponses sont plafonnées à 500 entrées. Le frontend conserve au plus 2 000 chemins et virtualise la liste.
+- Une seule liste de chemins de 2 000 entrées est conservée dans le cache Rust; les pages suivantes ne relancent pas un parcours complet du dossier.
+- L’overlay de progression est non modal et son état est isolé dans un store externe : les mises à jour de progression ne rerendent plus l’application entière. La progression est indéterminée tant qu’aucun pourcentage fiable n’est disponible.
+- Les événements de scroll sont regroupés par frame; les composants de liste sont mémorisés. Les listes rendent au plus 22 lignes de fichiers et environ 12 commits simultanément.
+- Les opérations Git natives longues sont limitées à une opération active pour éviter les pics de concurrence. Les animations de chargement n’utilisent plus de boucle JavaScript permanente et respectent `prefers-reduced-motion`.
+- Les dossiers générés connus sont ignorés par défaut. Les fichiers sensibles et ceux d’au moins 100 Mio sont automatiquement exclus de l’index courant et inscrits au `.gitignore`; les fichiers de 50 à 100 Mio sont signalés.
+- Les opérations Git possèdent un délai maximal de 15 minutes et peuvent être annulées depuis l’interface. Le clone utilise un dossier temporaire puis finalise par renommage.
+- L’aperçu est plafonné à 512 Kio et refuse les fichiers binaires, UTF-8 invalide et chemins hors du dossier sélectionné. Les permissions générales du plugin FS ont été retirées.
+- Une exclusion du commit courant ne supprime pas les blobs d’un historique déjà existant. Si un fichier trop volumineux a déjà été commité, un push peut encore être refusé par GitHub; la réécriture historique ou Git LFS exige une action distincte et confirmée.
+- Les validations effectuées sont `npm run build`, `cargo check --manifest-path src-tauri/Cargo.toml`, `cargo test --manifest-path src-tauri/Cargo.toml` et `git diff --check`. Aucun test de push réel ni mesure RAM sur un dépôt de plusieurs Gio n’a encore été mené; une limite absolue de RAM n’est donc pas garantie.
+- La compilation confirme des bornes statiques (500 chemins par page, cache maximal de 2 000 chemins et DOM limité aux lignes visibles), mais aucun profil React, FPS, temps d’interaction, CPU ou RAM n’a été mesuré dans une WebView Tauri pendant cette tâche.

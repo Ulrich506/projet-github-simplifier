@@ -26,21 +26,16 @@ body {
   font-weight: 800;
   letter-spacing: 0;
   box-shadow: 0 8px 18px rgb(11 87 208 / 0.25);
-  animation: logo-pulse 2.8s ease-in-out infinite;
 }
 
-@keyframes logo-pulse {
-  0%, 100% { transform: translateY(0) rotate(0); }
-  50% { transform: translateY(-3px) rotate(-3deg); }
+.progress-indeterminate {
+  width: 35%;
+  animation: progress-indeterminate 1.2s ease-in-out infinite alternate;
 }
 
-.check-sweep {
-  animation: check-sweep 700ms ease-out forwards;
-}
-
-@keyframes check-sweep {
-  from { left: 0.25rem; opacity: 0; }
-  to { left: calc(100% - 1.25rem); opacity: 1; }
+@keyframes progress-indeterminate {
+  from { transform: translateX(-35%); }
+  to { transform: translateX(220%); }
 }
 
 :root[data-accent="orange"] { --accent-color: #f97316; }

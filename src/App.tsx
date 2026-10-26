@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { join } from "@tauri-apps/api/path";
-import { invoke } from "@tauri-apps/api/core";
 import { open as openDirectory } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
@@ -27,28 +26,27 @@ import { EcranConnexionGitHub } from "./components/EcranConnexionGitHub";
 import { CommitHistory } from "./components/CommitHistory";
 import { ExplorateurFichiers } from "./components/ExplorateurFichiers";
 import { PublicationWizard } from "./components/PublicationWizard";
+import { CloneWizard } from "./components/CloneWizard";
 import { ProgressOverlay } from "./components/ProgressOverlay";
 import { SettingsModal, type AccentColor, type ThemeMode } from "./components/SettingsModal";
 import { ZoneDepot } from "./components/ZoneDepot";
-import { analyzeProject } from "./services/projectAnalyzer";
-import { listerCheminsRelatifs } from "./services/fileSystemUtils";
+import { scannerProjet } from "./services/projectAnalyzer";
+import { setProgression, type ProgressionAffichee } from "./services/progressStore";
 import {
   associerDepotDistant,
   ajouterEtCommiter,
+  annulerOperationsGit,
   ignorerFichierSensible,
   initialiserDepot,
   mettreAJour,
   obtenirEtatDepot,
-  obtenirFichiersSensiblesAffectes,
   obtenirFichiersSensiblesSuivis,
-  obtenirBrancheCourante,
-  obtenirUrlDistante,
-  preparerGitignore,
   publier,
   recuperer,
+  type CommitPreparation,
   type EtatDepot,
 } from "./services/gitService";
-import { creerOuRecupererDepot, listerDepots, verifierPublication } from "./services/githubService";
+import { creerOuRecupererDepot, listerDepots, obtenirUtilisateurConnecte } from "./services/githubService";
 import type { AnalyseProjet, DepotGitHub, ProgressionGit } from "./types";
 import {
   getInitialLanguage,
@@ -59,6 +57,7 @@ import {
 } from "./i18n";
 
 const appLogo = new URL("../src-tauri/icons/icon.png", import.meta.url).href;
+const MAX_PROJECT_FILES_IN_MEMORY = 2000;
 
 function repoNameFromUrl(url: string): string {
   return url.trim().replace(/\/+$/, "").split("/").pop()?.replace(/\.git$/i, "") ?? "";
@@ -68,10 +67,88 @@ function isGitHubUrl(url: string): boolean {
   return /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?\/?$/i.test(url.trim());
 }
 
-interface ProgressionAffichee {
-  percent: number;
-  label: string;
-  complete: boolean;
+function nettoyerDetailErreur(value: unknown, token: string | null): unknown {
+  if (typeof value !== "string") return value;
+  let detail = value;
+  if (token) detail = detail.split(token).join("[TOKEN REDACTED]");
+  return detail
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "[TOKEN REDACTED]")
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9+/=_-]+/gi, "$1 [REDACTED]")
+    .replace(/https:\/\/[^/\s:@]+:[^/\s@]+@/gi, "https://[REDACTED]@")
+    .slice(0, 1200);
+}
+
+function detailsTechniquesErreur(cause: unknown, token: string | null): Record<string, unknown> {
+  const details: Record<string, unknown> = {};
+  const visited = new Set<object>();
+
+  function read(value: unknown, depth: number): void {
+    if (value == null || depth > 3) return;
+    if (typeof value === "string") {
+      if (!details.message) details.message = nettoyerDetailErreur(value, token);
+      return;
+    }
+    if (typeof value !== "object" || visited.has(value)) return;
+    visited.add(value);
+    const record = value as Record<string, unknown>;
+    for (const key of ["name", "message", "code", "status", "statusCode", "statusMessage", "caller", "stderr"]) {
+      const item = record[key];
+      if (typeof item === "string" || typeof item === "number") {
+        details[key] = typeof item === "string" ? nettoyerDetailErreur(item, token) : item;
+      }
+    }
+    read(record.cause, depth + 1);
+    read(record.error, depth + 1);
+    read(record.data, depth + 1);
+    if (record.response && typeof record.response === "object") {
+      const response = record.response as Record<string, unknown>;
+      if (typeof response.status === "number") details.httpStatus = response.status;
+      read(response.data, depth + 1);
+    }
+  }
+
+  read(cause, 0);
+  if (!Object.keys(details).length) {
+    details.message = nettoyerDetailErreur(String(cause), token);
+  }
+  return details;
+}
+
+function messageExclusionsAutomatiques(preparation: CommitPreparation, lang: Language): string {
+  const formatNames = (files: string[]) => {
+    const names = files.slice(0, 3).join(", ");
+    return files.length > 3 ? `${names} (+${files.length - 3})` : names;
+  };
+  const messages: string[] = [];
+  if (preparation.excludedLargeFiles.length) {
+    messages.push(lang === "fr"
+      ? `Fichiers d’au moins 100 Mio exclus du commit et ajoutés au .gitignore : ${formatNames(preparation.excludedLargeFiles)}. Ils restent sur votre ordinateur. Cette action ne supprime pas ces fichiers des commits antérieurs.`
+      : lang === "es"
+        ? `Archivos de al menos 100 MiB excluidos del commit y añadidos a .gitignore: ${formatNames(preparation.excludedLargeFiles)}. Permanecen en tu equipo. Esto no los elimina de commits anteriores.`
+        : `Files of at least 100 MiB were excluded from the commit and added to .gitignore: ${formatNames(preparation.excludedLargeFiles)}. They remain on your computer. This does not remove them from earlier commits.`);
+  }
+  if (preparation.warningLargeFiles.length) {
+    messages.push(lang === "fr"
+      ? `Attention : fichiers de 50 à 100 Mio détectés : ${formatNames(preparation.warningLargeFiles)}.`
+      : lang === "es"
+        ? `Aviso: se detectaron archivos de 50 a 100 MiB: ${formatNames(preparation.warningLargeFiles)}.`
+        : `Warning: files between 50 and 100 MiB were detected: ${formatNames(preparation.warningLargeFiles)}.`);
+  }
+  if (preparation.excludedSensitiveFiles.length) {
+    messages.push(lang === "fr"
+      ? `Fichiers sensibles exclus automatiquement : ${formatNames(preparation.excludedSensitiveFiles)}.`
+      : lang === "es"
+        ? `Archivos sensibles excluidos automáticamente: ${formatNames(preparation.excludedSensitiveFiles)}.`
+        : `Sensitive files automatically excluded: ${formatNames(preparation.excludedSensitiveFiles)}.`);
+  }
+  if (preparation.excludedGeneratedFolders.length) {
+    messages.push(lang === "fr"
+      ? `Dossiers générés exclus automatiquement : ${formatNames(preparation.excludedGeneratedFolders)}.`
+      : lang === "es"
+        ? `Carpetas generadas excluidas automáticamente: ${formatNames(preparation.excludedGeneratedFolders)}.`
+        : `Generated folders automatically excluded: ${formatNames(preparation.excludedGeneratedFolders)}.`);
+  }
+  return messages.join(" ");
 }
 
 export default function App() {
@@ -90,9 +167,10 @@ export default function App() {
       return value === "blue" || value === "violet" || value === "green" ? value : "orange";
     } catch { return "orange"; }
   });
-  const [step, setStep] = useState(1);
+  const [, setStep] = useState(1);
   const [directory, setDirectory] = useState<string | null>(null);
   const [projectFiles, setProjectFiles] = useState<string[]>([]);
+  const [projectFilesHasMore, setProjectFilesHasMore] = useState(false);
   const [analysis, setAnalysis] = useState<AnalyseProjet | null>(null);
   const [repoState, setRepoState] = useState<EtatDepot | null>(null);
   const [trackedSensitive, setTrackedSensitive] = useState<string[]>([]);
@@ -110,22 +188,28 @@ export default function App() {
   const [securityNoteVisible, setSecurityNoteVisible] = useState(true);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [publicationWizardOpen, setPublicationWizardOpen] = useState(false);
+  const [cloneWizardOpen, setCloneWizardOpen] = useState(false);
   const [publicationMode, setPublicationMode] = useState<"create" | "update">("update");
   const [cloneRepositories, setCloneRepositories] = useState<DepotGitHub[]>([]);
   const [cloneRepositoriesLoading, setCloneRepositoriesLoading] = useState(false);
   const [cloneRepositoriesError, setCloneRepositoriesError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<ProgressionAffichee | null>(null);
   const progressFrame = useRef<number | null>(null);
   const pendingProgress = useRef<ProgressionAffichee | null>(null);
-  const renderedProgressPercent = useRef(0);
+  const loadingFilesPage = useRef(false);
+  const activeProjectDirectory = useRef<string | null>(null);
   const refreshTimer = useRef<number | null>(null);
   const refreshRequests = useRef<{ resolve: () => void; reject: (cause: unknown) => void; keepBusy: boolean }[]>([]);
   const refreshDirectory = useRef<string | null>(null);
   const selectionEnCours = useRef(false);
+  const hideCommit = useCallback((oid: string) => {
+    setHiddenCommits((current) => current.includes(oid) ? current : [...current, oid]);
+  }, []);
 
   useEffect(() => () => {
     if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current);
+    if (progressFrame.current !== null) window.cancelAnimationFrame(progressFrame.current);
     refreshRequests.current.splice(0).forEach((request) => request.resolve());
+    setProgression(null);
   }, []);
 
   // Sync commit message default when language changes if untouched
@@ -141,9 +225,81 @@ export default function App() {
     return translateError(err, lang);
   }, [lang]);
 
+  const triggerUIErrorNotification = useCallback((message: string) => {
+    setError(message);
+    setNotice(null);
+  }, []);
+
+  const openSettingsTokenModal = useCallback(() => {
+    setAccountPickerOpen(true);
+    setError(null);
+    setNotice(null);
+  }, []);
+
+  const handleGitError = useCallback((cause: unknown, operation = "GitHub/Git"): string => {
+    const technicalDetails = detailsTechniquesErreur(cause, auth.token);
+    console.error(`[Gsimplifié] Échec de l’opération ${operation}`, technicalDetails);
+    const raw = Object.values(technicalDetails).join(" ").toLowerCase();
+    const text = displayError(cause);
+    const status = Number(technicalDetails.statusCode ?? technicalDetails.httpStatus ?? technicalDetails.status);
+    const unauthorized = status === 401 || /\b401\b|bad credentials|authentication failed|could not authenticate|unauthorized/i.test(raw);
+    const repositoryNotFound = status === 404 || /\b404\b|repository not found|repo not found/i.test(raw);
+    const forbidden = status === 403 || /\b403\b|http error:\s*403|github.{0,40}forbidden|forbidden.{0,40}github/i.test(raw);
+
+    if (repositoryNotFound || unauthorized) {
+      const friendlyMessage = lang === "fr"
+        ? repositoryNotFound
+          ? "Dépôt GitHub introuvable ou inaccessible. Vérifiez l’URL et les droits de votre compte, puis réessayez."
+          : "La session GitHub a expiré ou n’est plus valide. Choisissez un compte enregistré ou reconnectez-vous."
+        : lang === "es"
+          ? repositoryNotFound
+            ? "No se encontró el repositorio de GitHub o no tienes acceso. Comprueba la URL y los permisos de tu cuenta."
+            : "La sesión de GitHub ha caducado o no es válida. Selecciona una cuenta guardada o vuelve a conectarte."
+          : repositoryNotFound
+            ? "GitHub repository not found or inaccessible. Check the URL and your account permissions, then try again."
+            : "Your GitHub session has expired or is invalid. Select a saved account or sign in again.";
+      triggerUIErrorNotification(friendlyMessage);
+      const currentToken = auth.token;
+      if (unauthorized || !currentToken) {
+        openSettingsTokenModal();
+      } else if (repositoryNotFound && currentToken) {
+        void (async () => {
+          try {
+            await obtenirUtilisateurConnecte(currentToken);
+          } catch {
+            openSettingsTokenModal();
+          }
+        })();
+      }
+      return friendlyMessage;
+    }
+
+    if (forbidden) {
+      const permissionMessage = lang === "fr"
+        ? "GitHub refuse cette opération. Vérifiez les droits d’écriture du compte sur le dépôt, la protection de la branche et, pour une organisation, l’autorisation SSO."
+        : lang === "es"
+          ? "GitHub rechazó la operación. Comprueba los permisos de escritura, la protección de la rama y la autorización SSO de la organización."
+          : "GitHub denied this operation. Check the account's write access, branch protection, and organization SSO authorization.";
+      triggerUIErrorNotification(permissionMessage);
+      return permissionMessage;
+    }
+
+    triggerUIErrorNotification(text);
+    return text;
+  }, [auth.token, displayError, lang, openSettingsTokenModal, triggerUIErrorNotification]);
+
   function updateProgress(next: ProgressionAffichee | null) {
-    renderedProgressPercent.current = Math.floor(next?.percent ?? 0);
-    setProgress(next);
+    setProgression(next ? { label: next.label, complete: next.complete } : null);
+  }
+
+  async function verifierSessionGitHub(): Promise<string> {
+    const token = auth.token?.trim();
+    if (!token) throw new Error("Connecte-toi à GitHub avant cette opération.");
+    const login = await obtenirUtilisateurConnecte(token);
+    if (auth.login && login.toLowerCase() !== auth.login.toLowerCase()) {
+      throw new Error("La session GitHub active ne correspond plus au compte affiché. Reconnecte le bon compte.");
+    }
+    return token;
   }
 
   const changeLanguage = useCallback((next: Language) => {
@@ -183,22 +339,23 @@ export default function App() {
     setError(null);
     setNotice(null);
     try {
-      await invoke("autoriser_dossier_projet", { chemin: path });
-      const paths = await listerCheminsRelatifs(path);
-      const result = await analyzeProject(paths);
+      const scan = await scannerProjet(path);
+      const result = scan.analysis;
       const rootIsGit = result.hasExistingGit;
       let remoteUrl: string | null = null;
       let gitState: EtatDepot | null = null;
       let tracked: string[] = [];
       if (rootIsGit) {
-        [remoteUrl, gitState, tracked] = await Promise.all([
-          obtenirUrlDistante(path),
+        [gitState, tracked] = await Promise.all([
           obtenirEtatDepot(path),
           obtenirFichiersSensiblesSuivis(path),
         ]);
+        remoteUrl = gitState.remoteUrl;
       }
       setDirectory(path);
-      setProjectFiles(paths.filter((filepath) => filepath !== ".git"));
+      activeProjectDirectory.current = path;
+      setProjectFiles(scan.files);
+      setProjectFilesHasMore(scan.hasMore && scan.files.length < MAX_PROJECT_FILES_IN_MEMORY);
       setAnalysis(result);
       setRepoState(gitState);
       setTrackedSensitive(tracked);
@@ -207,19 +364,44 @@ export default function App() {
       setHiddenCommits([]);
       setStep(1);
     } catch (cause) {
-      setError(displayError(cause));
+      handleGitError(cause);
     } finally {
       selectionEnCours.current = false;
       if (!keepBusy) setBusy(false);
     }
-  }, [busy, displayError, lang]);
+  }, [busy, handleGitError]);
+
+  const chargerPlusDeFichiersProjet = useCallback(async () => {
+    const requestedDirectory = directory;
+    if (
+      loadingFilesPage.current ||
+      !requestedDirectory ||
+      !projectFilesHasMore ||
+      projectFiles.length >= MAX_PROJECT_FILES_IN_MEMORY
+    ) return;
+    loadingFilesPage.current = true;
+    try {
+      const page = await scannerProjet(
+        requestedDirectory,
+        projectFiles.length,
+        Math.min(500, MAX_PROJECT_FILES_IN_MEMORY - projectFiles.length)
+      );
+      if (activeProjectDirectory.current !== requestedDirectory) return;
+      setProjectFiles((current) => [...current, ...page.files]);
+      setProjectFilesHasMore(page.hasMore && projectFiles.length + page.files.length < MAX_PROJECT_FILES_IN_MEMORY);
+    } catch (cause) {
+      handleGitError(cause);
+    } finally {
+      loadingFilesPage.current = false;
+    }
+  }, [directory, handleGitError, projectFiles.length, projectFilesHasMore]);
 
   async function chooseProjectFolder() {
     try {
       const path = await openDirectory({ directory: true, multiple: false });
       if (typeof path === "string") await selectProject(path);
     } catch (cause) {
-      setError(displayError(cause));
+      handleGitError(cause);
     }
   }
 
@@ -253,7 +435,7 @@ export default function App() {
           requests.forEach((item) => item.resolve());
         })
         .catch((cause: unknown) => {
-          setError(displayError(cause));
+          handleGitError(cause);
           requests.forEach((item) => item.reject(cause));
         })
         .finally(() => {
@@ -261,7 +443,7 @@ export default function App() {
         });
     }, 300);
     return request;
-  }, [directory, displayError]);
+  }, [directory, handleGitError]);
 
   async function associateRemote() {
     if (!directory) return;
@@ -287,7 +469,7 @@ export default function App() {
       setNotice(t.ui.remoteLinked);
       setReplaceRemoteConfirmed(false);
     } catch (cause) {
-      setError(displayError(cause));
+      handleGitError(cause);
     } finally {
       setBusy(false);
     }
@@ -299,13 +481,14 @@ export default function App() {
     setError(null);
     try {
       await ignorerFichierSensible(directory, filepath);
-      const [paths, state, tracked] = await Promise.all([
-        listerCheminsRelatifs(directory),
+      const [scan, state, tracked] = await Promise.all([
+        scannerProjet(directory),
         obtenirEtatDepot(directory),
         obtenirFichiersSensiblesSuivis(directory),
       ]);
-      setProjectFiles(paths.filter((filepath) => filepath !== ".git"));
-      setAnalysis(await analyzeProject(paths));
+      setProjectFiles(scan.files);
+      setProjectFilesHasMore(scan.hasMore && scan.files.length < MAX_PROJECT_FILES_IN_MEMORY);
+      setAnalysis(scan.analysis);
       setRepoState(state);
       setTrackedSensitive(tracked);
       setNotice(
@@ -314,7 +497,7 @@ export default function App() {
           : t.ui.sensitiveExcluded(filepath)
       );
     } catch (cause) {
-      setError(displayError(cause));
+      handleGitError(cause);
     } finally {
       setBusy(false);
     }
@@ -322,38 +505,24 @@ export default function App() {
 
   function suivreProgressionGit(evt: ProgressionGit, label: string) {
     const phase = evt.phase.toLowerCase();
-    const [start, span] = phase.includes("count")
-      ? [5, 10]
-      : phase.includes("scan")
-        ? [12, 10]
-      : phase.includes("add")
-        ? [22, 16]
-        : phase.includes("commit")
-          ? [38, 6]
-          : phase.includes("compress")
-            ? [15, 20]
-            : phase.includes("receiv") || phase.includes("fetch")
-              ? [35, 45]
-              : phase.includes("resolv")
-                ? [82, 13]
-                : [10, 75];
-    const ratio = evt.total && evt.total > 0 ? Math.min(1, (evt.loaded ?? 0) / evt.total) : 0;
-    const estimate = Math.min(95, start + span * ratio);
-    pendingProgress.current = {
-      percent: Math.max(pendingProgress.current?.percent ?? 0, renderedProgressPercent.current, estimate),
-      label,
-      complete: false,
-    };
+    const localized = (fr: string, es: string, en: string) =>
+      lang === "fr" ? fr : lang === "es" ? es : en;
+    const phaseLabel = phase.includes("large-file-scan")
+      ? localized("Vérification des fichiers…", "Comprobando archivos…", "Checking files…")
+      : phase.includes("enumerat") || phase.includes("count")
+        ? localized("Préparation des objets Git…", "Preparando objetos de Git…", "Preparing Git objects…")
+        : phase.includes("compress")
+          ? localized("Compression des objets Git…", "Comprimiendo objetos de Git…", "Compressing Git objects…")
+          : phase.includes("receiv") || phase.includes("fetch")
+            ? localized("Récupération depuis GitHub…", "Recuperando desde GitHub…", "Receiving from GitHub…")
+            : phase.includes("resolv") || phase.includes("delta")
+              ? localized("Finalisation de la synchronisation…", "Finalizando la sincronización…", "Finishing synchronization…")
+              : label;
+    pendingProgress.current = { label: phaseLabel, complete: false };
     if (progressFrame.current === null) {
       progressFrame.current = window.requestAnimationFrame(() => {
         progressFrame.current = null;
-        if (pendingProgress.current) {
-          const roundedPercent = Math.floor(pendingProgress.current.percent);
-          if (roundedPercent !== renderedProgressPercent.current) {
-            renderedProgressPercent.current = roundedPercent;
-            setProgress({ ...pendingProgress.current, percent: roundedPercent });
-          }
-        }
+        if (pendingProgress.current) updateProgress(pendingProgress.current);
       });
     }
   }
@@ -364,7 +533,7 @@ export default function App() {
       progressFrame.current = null;
     }
     pendingProgress.current = null;
-    updateProgress({ percent: 100, label, complete: true });
+    updateProgress({ label, complete: true });
     await new Promise((resolve) => window.setTimeout(resolve, 850));
   }
 
@@ -376,50 +545,51 @@ export default function App() {
   }
 
   async function publishChanges() {
-    if (!directory || !auth.token) return;
+    const token = auth.token?.trim();
+    if (!directory || !token) return;
     let localCommitPendingSync = false;
+    let commitPreparation: CommitPreparation = { excludedLargeFiles: [], warningLargeFiles: [], excludedSensitiveFiles: [], excludedGeneratedFolders: [] };
     setBusy(true);
     setError(null);
     setNotice(null);
-    updateProgress({ percent: 0, label: t.operationProgress.publishing, complete: false });
+    updateProgress({ label: t.operationProgress.publishing, complete: false });
     try {
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      updateProgress({ percent: 5, label: t.operationProgress.publishing, complete: false });
-      const currentSensitive = await obtenirFichiersSensiblesAffectes(directory);
-      if (currentSensitive.length) {
-        throw new Error(t.ui.sensitiveFilesTracked(currentSensitive));
-      }
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
+      await verifierSessionGitHub();
       if (!repoState?.remoteUrl) {
         throw new Error(t.ui.linkRemoteFirst);
       }
-      updateProgress({ percent: 8, label: t.operationProgress.publishing, complete: false });
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
       if (repoState.changedFiles > 0) {
-        updateProgress({ percent: 12, label: t.operationProgress.publishing, complete: false });
-        await ajouterEtCommiter(directory, commitMessage.trim() || t.syncStep.commitMsgPlaceholder, {
+        updateProgress({ label: t.operationProgress.publishing, complete: false });
+        commitPreparation = await ajouterEtCommiter(directory, commitMessage.trim() || t.syncStep.commitMsgPlaceholder, {
           name: auth.login ?? "GitHub User",
           email: `${auth.login ?? "user"}@users.noreply.github.com`,
         }, (evt) => suivreProgressionGit(evt, t.operationProgress.publishing));
         localCommitPendingSync = true;
       }
-      updateProgress({ percent: 45, label: t.operationProgress.publishing, complete: false });
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
       await mettreAJour({
         dir: directory,
-        token: auth.token,
+        token,
         onProgress: (evt) => suivreProgressionGit(evt, t.operationProgress.publishing),
       });
       localCommitPendingSync = false;
-      updateProgress({ percent: 90, label: t.operationProgress.publishing, complete: false });
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
       await refreshProjectState(true);
-      updateProgress({ percent: 98, label: t.operationProgress.publishing, complete: false });
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
       await afficherFinOperation(t.operationProgress.completed);
-      setNotice(t.ui.syncCompleted);
+      const exclusions = messageExclusionsAutomatiques(commitPreparation, lang);
+      setNotice(exclusions ? `${t.ui.syncCompleted} ${exclusions}` : t.ui.syncCompleted);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      setError(displayError(
-        localCommitPendingSync && /failed to fetch|network error|cannot contact|dns|timeout|connection reset/i.test(message)
-          ? new Error("SYNC_OFFLINE_LOCAL_COMMIT_SAVED")
-          : cause
-      ));
+      if (localCommitPendingSync && /failed to fetch|network error|cannot contact|dns|timeout|connection reset/i.test(message)) {
+        console.error("[Gsimplifié] Échec réseau pendant la synchronisation", detailsTechniquesErreur(cause, token));
+        triggerUIErrorNotification("Pas de connexion Internet. Les modifications locales sont enregistrées et seront synchronisées dès que le réseau revient.");
+      } else {
+        handleGitError(cause, "publication / mise à jour");
+      }
     } finally {
       setBusy(false);
       effacerProgression();
@@ -427,7 +597,9 @@ export default function App() {
   }
 
   async function createAndPublish() {
-    if (!directory || !auth.token) return;
+    const token = auth.token?.trim();
+    if (!directory || !token) return;
+    let commitPreparation: CommitPreparation = { excludedLargeFiles: [], warningLargeFiles: [], excludedSensitiveFiles: [], excludedGeneratedFolders: [] };
     if (repoState?.remoteUrl) {
       setError(t.ui.remoteAlreadyLinked);
       return;
@@ -438,44 +610,39 @@ export default function App() {
     }
     setBusy(true);
     setError(null);
-    updateProgress({ percent: 0, label: t.operationProgress.publishing, complete: false });
+    updateProgress({ label: t.operationProgress.publishing, complete: false });
     try {
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      updateProgress({ percent: 5, label: t.operationProgress.publishing, complete: false });
-      const secrets = await obtenirFichiersSensiblesAffectes(directory);
-      if (secrets.length) {
-        throw new Error(t.ui.sensitiveFilesTracked(secrets));
-      }
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
+      await verifierSessionGitHub();
       if (!analysis?.hasExistingGit) await initialiserDepot(directory);
-      await preparerGitignore(directory, analysis?.suggestedGitignore ?? "");
-      updateProgress({ percent: 18, label: t.operationProgress.publishing, complete: false });
-      const remote = await creerOuRecupererDepot(auth.token, {
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
+      const remote = await creerOuRecupererDepot(token, {
         nom: repoName.trim(),
         prive: privateRepo,
       });
-      updateProgress({ percent: 22, label: t.operationProgress.publishing, complete: false });
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
       await associerDepotDistant(directory, remote.clone_url);
-      updateProgress({ percent: 25, label: t.operationProgress.publishing, complete: false });
-      await ajouterEtCommiter(directory, commitMessage.trim() || (lang === "fr" ? "Publication initiale" : lang === "es" ? "Publicación inicial" : "Initial commit"), {
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
+      commitPreparation = await ajouterEtCommiter(directory, commitMessage.trim() || (lang === "fr" ? "Publication initiale" : lang === "es" ? "Publicación inicial" : "Initial commit"), {
         name: auth.login ?? "GitHub User",
         email: `${auth.login ?? "user"}@users.noreply.github.com`,
       }, (evt) => suivreProgressionGit(evt, t.operationProgress.publishing));
-      updateProgress({ percent: 48, label: t.operationProgress.publishing, complete: false });
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
       await publier({
         dir: directory,
-        token: auth.token,
+        token,
         onProgress: (evt) => suivreProgressionGit(evt, t.operationProgress.publishing),
       });
-      updateProgress({ percent: 88, label: t.operationProgress.publishing, complete: false });
-      const branch = await obtenirBrancheCourante(directory);
-      await verifierPublication(auth.token, remote.owner.login, remote.name, branch);
-      updateProgress({ percent: 94, label: t.operationProgress.publishing, complete: false });
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
       await refreshProjectState(true);
-      updateProgress({ percent: 98, label: t.operationProgress.publishing, complete: false });
+      updateProgress({ label: t.operationProgress.publishing, complete: false });
       await afficherFinOperation(t.operationProgress.completed);
-      setNotice(t.ui.publishSuccess(remote.html_url));
+      const exclusions = messageExclusionsAutomatiques(commitPreparation, lang);
+      const publicationNotice = t.ui.publishSuccess(remote.html_url);
+      setNotice(exclusions ? `${publicationNotice} ${exclusions}` : publicationNotice);
     } catch (cause) {
-      setError(displayError(cause));
+      handleGitError(cause, "création / publication");
     } finally {
       setBusy(false);
       effacerProgression();
@@ -486,11 +653,10 @@ export default function App() {
     try {
       const selected = await openDirectory({ directory: true, multiple: false });
       if (typeof selected === "string") {
-        await invoke("autoriser_dossier_projet", { chemin: selected });
         setCloneParent(selected);
       }
     } catch (cause) {
-      setError(displayError(cause));
+      handleGitError(cause, "clonage");
     }
   }
 
@@ -499,42 +665,46 @@ export default function App() {
       setError(t.ui.cloneInputRequired);
       return;
     }
+
     setBusy(true);
     setError(null);
     setNotice(null);
-    updateProgress({ percent: 0, label: t.operationProgress.cloning, complete: false });
+    updateProgress({ label: t.operationProgress.cloning, complete: false });
     try {
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      updateProgress({ percent: 4, label: t.operationProgress.cloning, complete: false });
+      updateProgress({ label: t.operationProgress.cloning, complete: false });
+      const token = await verifierSessionGitHub();
       const target = await join(cloneParent, cloneName);
-      updateProgress({ percent: 8, label: t.operationProgress.cloning, complete: false });
+      updateProgress({ label: t.operationProgress.cloning, complete: false });
       await recuperer({
         dir: target,
         remoteUrl: cloneUrl.trim(),
-        token: auth.token ?? "",
+        token,
         onProgress: (evt) => suivreProgressionGit(evt, t.operationProgress.cloning),
       });
-      updateProgress({ percent: 90, label: t.operationProgress.cloning, complete: false });
+      updateProgress({ label: t.operationProgress.cloning, complete: false });
       await selectProject(target, true);
-      updateProgress({ percent: 98, label: t.operationProgress.cloning, complete: false });
+      updateProgress({ label: t.operationProgress.cloning, complete: false });
       setNotice(t.ui.cloneSuccess(target));
       setStep(1);
       await afficherFinOperation(t.operationProgress.completed);
     } catch (cause) {
-      setError(displayError(cause));
+      handleGitError(cause);
     } finally {
       setBusy(false);
       effacerProgression();
     }
   }
 
-  const stepsList = useMemo(() => [
-    { id: 1, label: t.steps.project, icon: FolderGit2 },
-    { id: 2, label: t.steps.sensitive, icon: ShieldAlert },
-    { id: 3, label: t.steps.sync, icon: RefreshCw },
-  ], [t]);
+  async function cancelGitOperation() {
+    try {
+      await annulerOperationsGit();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
 
-  const activeStep = step === 4 ? 4 : step;
+  const activeStep: number = 1;
 
   const chargerDepotsGitHub = useCallback(async () => {
     if (!auth.token) {
@@ -547,15 +717,16 @@ export default function App() {
     try {
       setCloneRepositories(await listerDepots(auth.token));
     } catch (cause) {
-      setCloneRepositoriesError(displayError(cause));
+      const message = handleGitError(cause, "chargement des dépôts");
+      setCloneRepositoriesError(message);
     } finally {
       setCloneRepositoriesLoading(false);
     }
-  }, [auth.token, displayError]);
+  }, [auth.token, displayError, handleGitError]);
 
   useEffect(() => {
-    if (step === 4) void chargerDepotsGitHub();
-  }, [chargerDepotsGitHub, step]);
+    if (cloneWizardOpen) void chargerDepotsGitHub();
+  }, [chargerDepotsGitHub, cloneWizardOpen]);
 
   function ouvrirAssistantPublication(mode: "create" | "update") {
     setPublicationMode(mode);
@@ -593,9 +764,15 @@ export default function App() {
 
             {auth.token ? (
               <>
-                <span className="max-w-28 truncate rounded-full border border-emerald-800 bg-emerald-950/50 px-2 py-1 text-xs text-emerald-300 sm:max-w-none sm:px-3 sm:text-sm">
+                <button
+                  type="button"
+                  onClick={() => setAccountPickerOpen(true)}
+                  aria-label={t.ui.accountsTitle}
+                  title={t.ui.accountsTitle}
+                  className="max-w-28 truncate rounded-full border border-emerald-800 bg-emerald-950/50 px-2 py-1 text-xs text-emerald-300 hover:border-emerald-500 sm:max-w-none sm:px-3 sm:text-sm"
+                >
                   ● @{auth.login ?? t.app.connectedAs}
-                </span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setShowDisconnectConfirm(true)}
@@ -640,62 +817,30 @@ export default function App() {
       )}
 
       <nav className="border-b border-slate-800 bg-[#111111]">
-        <div className="mx-auto grid max-w-7xl gap-4 px-4 py-3 lg:grid-cols-[1fr_auto]">
-          <section aria-label={lang === "fr" ? "Gestion et suivi" : lang === "es" ? "Gestión y seguimiento" : "Management and tracking"}>
-            <p className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-              {lang === "fr" ? "Gestion & suivi" : lang === "es" ? "Gestión y seguimiento" : "Management & tracking"}
-            </p>
-            <div className="flex gap-1 overflow-x-auto">
-              {stepsList.map(({ id, label, icon: Icon }) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => {
-                    setStep(id);
-                    setError(null);
-                  }}
-                  className={`flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition ${
-                    activeStep === id
-                      ? "bg-orange-950/50 text-white ring-1 ring-orange-700"
-                      : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
-                  }`}
-                >
-                  <Icon size={16} />
-                  <span>{id}. {label}</span>
-                  {id === 1 && directory && <Check size={14} className="text-emerald-400" />}
-                  {id === 2 && analysis?.sensitiveFiles.length ? (
-                    <span className="rounded-full bg-amber-500/20 px-1.5 text-xs text-amber-300">
-                      {analysis.sensitiveFiles.length}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-          </section>
-          <section aria-label={lang === "fr" ? "Actions Git" : lang === "es" ? "Acciones de Git" : "Git actions"}>
-            <p className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-              {lang === "fr" ? "Actions Git" : lang === "es" ? "Acciones Git" : "Git actions"}
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => ouvrirAssistantPublication(repoState?.remoteUrl ? "update" : "create")}
-                disabled={!directory || busy}
-                className="inline-flex shrink-0 items-center gap-2 rounded-md border border-emerald-800 px-3 py-2 text-sm text-emerald-200 hover:bg-emerald-950/50 disabled:opacity-40"
-              >
-                <CloudUpload size={15} />
-                {lang === "fr" ? "Publier" : lang === "es" ? "Publicar" : "Publish"}
-              </button>
-              <button
-                type="button"
-                onClick={() => { setStep(4); setError(null); }}
-                className={`inline-flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm ${activeStep === 4 ? "bg-orange-950/50 text-white ring-1 ring-orange-700" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"}`}
-              >
-                <GitFork size={15} />
-                {t.steps.clone}
-              </button>
-            </div>
-          </section>
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            {lang === "fr" ? "Actions du projet" : lang === "es" ? "Acciones del proyecto" : "Project actions"}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => ouvrirAssistantPublication(repoState?.remoteUrl ? "update" : "create")}
+              disabled={busy}
+              className="inline-flex items-center gap-2 rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600 disabled:opacity-50"
+            >
+              <CloudUpload size={16} />
+              {lang === "fr" ? "Publier le projet" : lang === "es" ? "Publicar proyecto" : "Publish project"}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setError(null); setCloneWizardOpen(true); }}
+              disabled={busy}
+              className="inline-flex items-center gap-2 rounded-md border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:border-orange-500 hover:text-white disabled:opacity-50"
+            >
+              <GitFork size={16} />
+              {lang === "fr" ? "Cloner un projet" : lang === "es" ? "Clonar un proyecto" : "Clone a project"}
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -737,8 +882,20 @@ export default function App() {
                   </button>
                 )}
                 {auth.token && /could not authenticate|connexion à github impossible|no se pudo iniciar sesión/i.test(error) && (
-                  <button type="button" onClick={() => { setError(null); setShowDisconnectConfirm(true); }} className="mt-1 block underline underline-offset-2 hover:text-white">
+                  <button type="button" onClick={() => { setError(null); setAccountPickerOpen(true); }} className="mt-1 block underline underline-offset-2 hover:text-white">
                     {t.ui.reconnectAccount}
+                  </button>
+                )}
+                {/repository not found|dépôt github introuvable|repositorio de github|permissions|droits de votre compte|droits d’écriture du compte|write access|autorisation sso/i.test(error) && (
+                  <div className="mt-1 flex flex-wrap gap-x-4">
+                    <button type="button" onClick={() => { setError(null); setAccountPickerOpen(true); }} className="block underline underline-offset-2 hover:text-white">
+                      {lang === "fr" ? "Choisir ou reconnecter un compte GitHub" : lang === "es" ? "Elegir o volver a conectar una cuenta de GitHub" : "Choose or reconnect a GitHub account"}
+                    </button>
+                  </div>
+                )}
+                {/repository not found|dépôt github introuvable|repositorio de github/i.test(error) && directory && repoState?.remoteUrl && (
+                  <button type="button" onClick={() => { setStep(1); setError(null); window.setTimeout(() => document.getElementById("remote-url")?.focus(), 0); }} className="mt-1 block underline underline-offset-2 hover:text-white">
+                    {lang === "fr" ? "Vérifier l’adresse du dépôt" : lang === "es" ? "Comprobar la dirección del repositorio" : "Check repository URL"}
                   </button>
                 )}
               </div>
@@ -781,7 +938,14 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                <ExplorateurFichiers directory={directory} files={projectFiles} lang={lang} />
+                <ExplorateurFichiers
+                  directory={directory}
+                  files={projectFiles}
+                  hasMore={projectFilesHasMore}
+                  totalFileCount={analysis?.fileCount ?? projectFiles.length}
+                  onLoadMore={chargerPlusDeFichiersProjet}
+                  lang={lang}
+                />
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div className="rounded-lg border border-slate-800 bg-[#0d0d0d] p-4">
                     <label htmlFor="remote-url" className="mb-2 block text-sm font-medium">
@@ -826,10 +990,10 @@ export default function App() {
                 <div className="mt-4 flex justify-end">
                   <button
                     type="button"
-                    onClick={() => { setStep(2); setError(null); setNotice(null); }}
+                    onClick={() => { ouvrirAssistantPublication(repoState?.remoteUrl ? "update" : "create"); setError(null); setNotice(null); }}
                     className="inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-2.5 text-sm font-semibold hover:bg-orange-500"
                   >
-                    {t.projectStep.continueBtn} <ChevronRight size={16} />
+                    {lang === "fr" ? "Continuer vers la publication" : lang === "es" ? "Continuar a la publicación" : "Continue to publishing"} <ChevronRight size={16} />
                   </button>
                 </div>
               </div>
@@ -860,8 +1024,14 @@ export default function App() {
                     <div className="flex gap-3">
                       <AlertTriangle size={19} className="mt-0.5 shrink-0" />
                       <div>
-                        <p className="font-semibold">{t.sensitiveStep.warningTitle}</p>
-                        <p className="mt-1 text-sm text-amber-200/80">{t.sensitiveStep.warningDesc}</p>
+                        <p className="font-semibold">{lang === "fr" ? "Protection automatique à la publication" : lang === "es" ? "Protección automática al publicar" : "Automatic protection when publishing"}</p>
+                        <p className="mt-1 text-sm text-amber-200/80">
+                          {lang === "fr"
+                            ? "Les fichiers reconnus comme sensibles seront exclus et retirés du suivi Git avant le commit. Leur contenu reste sur votre ordinateur."
+                            : lang === "es"
+                              ? "Los archivos identificados como sensibles se excluirán y dejarán de seguirse en Git antes del commit. Su contenido permanece en tu equipo."
+                              : "Files recognized as sensitive will be excluded and removed from Git tracking before the commit. Their contents remain on your computer."}
+                        </p>
                       </div>
                     </div>
                     <button type="button" onClick={() => setSecurityNoteVisible(false)} aria-label={t.common.dismiss} className="shrink-0 text-amber-200 hover:text-white"><X size={17} /></button>
@@ -918,9 +1088,14 @@ export default function App() {
               <div className="rounded-xl border border-slate-800 bg-[#171717] p-5">
                 <h2 className="mb-2 font-semibold">{t.syncStep.firstPublishTitle}</h2>
                 <p className="mb-4 text-sm text-slate-400">{t.syncStep.firstPublishDesc}</p>
-                <button type="button" onClick={() => ouvrirAssistantPublication("create")} disabled={busy || !auth.token} className="rounded-md bg-emerald-700 px-4 py-2 font-semibold hover:bg-emerald-600 disabled:opacity-40">
-                  <CloudUpload size={15} className="mr-1 inline" />{t.syncStep.createAndPublishBtn}
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setStep(2)} className="rounded-md bg-slate-800 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700">
+                    {lang === "fr" ? "Précédent" : lang === "es" ? "Anterior" : "Back"}
+                  </button>
+                  <button type="button" onClick={() => ouvrirAssistantPublication("create")} disabled={busy || !auth.token} className="rounded-md bg-emerald-700 px-4 py-2 font-semibold hover:bg-emerald-600 disabled:opacity-40">
+                    <CloudUpload size={15} className="mr-1 inline" />{t.syncStep.createAndPublishBtn}
+                  </button>
+                </div>
               </div>
             ) : (
               <>
@@ -957,9 +1132,14 @@ export default function App() {
                 <div className="rounded-xl border border-slate-800 bg-[#171717] p-5">
                   <h2 className="font-semibold">{t.syncStep.actionsTitle}</h2>
                   <p className="mt-1 text-xs text-slate-400">{t.syncStep.actionsDesc}</p>
-                  <button type="button" onClick={() => ouvrirAssistantPublication("update")} disabled={busy || !auth.token} className="mt-4 rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40">
-                    <CloudUpload size={15} className="mr-1 inline" />{t.syncStep.publishBtn}
-                  </button>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button type="button" onClick={() => setStep(2)} className="rounded-md bg-slate-800 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700">
+                      {lang === "fr" ? "Précédent" : lang === "es" ? "Anterior" : "Back"}
+                    </button>
+                    <button type="button" onClick={() => ouvrirAssistantPublication("update")} disabled={busy || !auth.token} className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold hover:bg-emerald-600 disabled:opacity-40">
+                      <CloudUpload size={15} className="mr-1 inline" />{t.syncStep.publishBtn}
+                    </button>
+                  </div>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-[#171717] p-5">
                   <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">{t.syncStep.recentHistoryTitle}</h2>
@@ -970,7 +1150,7 @@ export default function App() {
                       language={lang}
                       unnamedLabel={t.syncStep.unnamedCommit}
                       hideLabel={t.dialogs.hideCommit}
-                      onHide={(oid) => setHiddenCommits((current) => [...current, oid])}
+                      onHide={hideCommit}
                     />
                   ) : <p className="text-sm text-slate-400">{t.syncStep.noCommits}</p>}
                   <p className="mt-3 text-xs text-slate-500">{t.ui.hiddenCommitNotice}</p>
@@ -1058,8 +1238,14 @@ export default function App() {
           </section>
         )}
 
-        {busy && progress && <ProgressOverlay progress={progress} completedLabel={t.operationProgress.completed} />}
-        {busy && !progress && <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/70 p-4" role="status" aria-live="polite"><LoaderCircle className="animate-spin text-orange-400" size={36} /></div>}
+        {busy && (
+          <ProgressOverlay
+            completedLabel={t.operationProgress.completed}
+            cancelLabel={t.dialogs.cancel}
+            loadingLabel={t.common.inProgress}
+            onCancel={() => void cancelGitOperation()}
+          />
+        )}
       </main>
 
         <PublicationWizard
@@ -1075,11 +1261,33 @@ export default function App() {
           privateRepo={privateRepo}
           commitMessage={commitMessage}
           busy={busy}
+          authenticated={Boolean(auth.token) && !auth.enAttente}
           onRepoNameChange={setRepoName}
           onPrivateRepoChange={setPrivateRepo}
           onCommitMessageChange={setCommitMessage}
+          onChooseProject={() => void chooseProjectFolder()}
+          onConnect={() => setAccountPickerOpen(true)}
           onClose={() => setPublicationWizardOpen(false)}
           onFinish={terminerAssistantPublication}
+        />
+
+        <CloneWizard
+          open={cloneWizardOpen}
+          language={lang}
+          repositories={cloneRepositories}
+          loading={cloneRepositoriesLoading}
+          error={cloneRepositoriesError}
+          selectedUrl={cloneUrl}
+          parentDirectory={cloneParent}
+          targetDirectory={cloneTarget}
+          busy={busy}
+          authenticated={Boolean(auth.token) && !auth.enAttente}
+          onSelectRepository={setCloneUrl}
+          onRefresh={() => void chargerDepotsGitHub()}
+          onChooseParent={() => void chooseCloneParent()}
+          onClone={() => void cloneRepository()}
+          onConnect={() => setAccountPickerOpen(true)}
+          onClose={() => setCloneWizardOpen(false)}
         />
 
         <SettingsModal
@@ -1130,9 +1338,11 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => void auth.connecterAvecCompte(login).then((connected) => { if (connected) setAccountPickerOpen(false); })}
-                    className="min-w-0 flex-1 truncate rounded px-2 py-2 text-left text-sm hover:bg-slate-800"
+                    disabled={auth.enAttente}
+                    aria-current={auth.login?.toLowerCase() === login.toLowerCase() ? "true" : undefined}
+                    className="min-w-0 flex-1 truncate rounded px-2 py-2 text-left text-sm hover:bg-slate-800 disabled:opacity-50"
                   >
-                    @{login}
+                    @{login}{auth.login?.toLowerCase() === login.toLowerCase() ? ` · ${lang === "fr" ? "Connecté" : lang === "es" ? "Conectado" : "Connected"}` : ""}
                   </button>
                   <button type="button" onClick={() => void auth.oublierCompte(login)} aria-label={t.ui.forgetAccount(login)} className="rounded p-2 text-slate-500 hover:bg-red-950 hover:text-red-300"><X size={15} /></button>
                 </div>

@@ -1,6 +1,4 @@
-use std::path::PathBuf;
-
-use tauri_plugin_fs::FsExt;
+mod git_native;
 
 const KEYRING_SERVICE: &str = "com.root.github-simplifie";
 
@@ -23,18 +21,6 @@ fn save_account_index(accounts: &[String]) -> Result<(), String> {
     entry
         .set_password(&serialized)
         .map_err(|error| format!("Impossible d’enregistrer la liste des comptes : {error}"))
-}
-
-#[tauri::command]
-fn autoriser_dossier_projet(app: tauri::AppHandle, chemin: String) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(PathBuf::from(&chemin))
-        .map_err(|error| format!("Impossible de vérifier le dossier sélectionné : {error}"))?;
-    if !canonical.is_dir() {
-        return Err("Le chemin sélectionné n’est pas un dossier.".to_string());
-    }
-    app.fs_scope()
-        .allow_directory(canonical, true)
-        .map_err(|error| format!("Impossible d’autoriser l’accès au dossier sélectionné : {error}"))
 }
 
 #[tauri::command]
@@ -153,12 +139,9 @@ fn oublier_compte_github(login: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // Requis par src/services/githubAuth.ts et src/services/tauriGitHttp.ts,
-        // qui font leurs requêtes via @tauri-apps/plugin-http pour éviter
-        // les blocages CORS du WebView sur les domaines github.com/api.github.com
+        .manage(git_native::GitOperations::default())
+        // Requis pour les appels HTTPS vers l’API GitHub depuis le WebView.
         .plugin(tauri_plugin_http::init())
-        // Requis pour lire et modifier le dossier de projet local.
-        .plugin(tauri_plugin_fs::init())
         // Requis pour choisir un dossier avec le sélecteur natif.
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -170,7 +153,19 @@ pub fn run() {
             charger_jeton_github_compte,
             enregistrer_compte_github,
             oublier_compte_github,
-            autoriser_dossier_projet
+            git_native::git_scan_project,
+            git_native::git_read_file_preview,
+            git_native::git_status_project,
+            git_native::git_init,
+            git_native::git_set_remote,
+            git_native::git_set_ignore,
+            git_native::git_prepare_ignore,
+            git_native::git_commit_project,
+            git_native::git_push_project,
+            git_native::git_sync_project,
+            git_native::git_clone_project,
+            git_native::git_cancel_operation,
+            git_native::git_list_sensitive_tracked
         ])
         .run(tauri::generate_context!())
         .expect("erreur lors du lancement de l'application Tauri");

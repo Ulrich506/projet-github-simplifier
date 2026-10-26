@@ -1,8 +1,9 @@
 # Gsimplifié
 
-Application desktop (Tauri + React + TypeScript) pour publier/gérer des
-projets GitHub sans connaître Git : connexion → glisser-déposer → choisir
-l'action → confirmer.
+Application desktop (Tauri + React + TypeScript) pour publier, synchroniser et
+cloner des projets GitHub sans connaître Git. Les opérations Git sont exécutées
+par le Git natif via Rust/Tauri; le frontend ne charge pas l’arborescence
+complète ni les contenus de fichiers pour préparer les commits.
 
 ## Installation
 
@@ -85,36 +86,34 @@ index.html                    # point d'entrée Vite
 src/
   main.tsx                    # montage React
   index.css                   # directives Tailwind
-  App.tsx                     # orchestration du flow (connexion → dépôt → action → confirmation → résultat)
+  App.tsx                     # orchestration des assistants guidés et du projet actif
   types.ts                    # types partagés
   hooks/
     useGitHubAuth.ts          # état + logique de connexion Device Flow (+ récupère le login)
   components/
     EcranConnexionGitHub.tsx  # écran 1 : code de connexion GitHub
     ZoneDepot.tsx              # écran 2 : glisser-déposer natif (event Tauri onDragDropEvent)
-    MenuActions.tsx            # écran 3 : choix de l'action
-    EcranConfirmation.tsx      # écran 4 : confirmation + nom du dépôt
-    EcranProgression.tsx       # écran 5 : progression Git/GitHub
-    EcranResultat.tsx          # écran 6 : résultat final
+    PublicationWizard.tsx     # assistant commit / publication / mise à jour
+    CloneWizard.tsx           # assistant de clonage
+    ExplorateurFichiers.tsx   # liste virtualisée et aperçu texte borné
+    ProgressOverlay.tsx       # progression et annulation des processus Git
   services/
-    fileSystemUtils.ts        # parcours récursif du VRAI dossier disque (@tauri-apps/plugin-fs)
-    tauriFsBridge.ts           # adapte @tauri-apps/plugin-fs au format attendu par isomorphic-git
-    projectAnalyzer.ts        # détecte le type de projet + fichiers sensibles (à partir des chemins)
-    gitService.ts             # init/commit/push/pull via isomorphic-git, opère directement sur le vrai dossier
-    tauriGitHttp.ts           # client HTTP isomorphic-git basé sur le plugin natif Tauri (évite le CORS de github.com)
+    projectAnalyzer.ts        # scan natif paginé des chemins et métadonnées
+    gitService.ts             # appels aux commandes Rust/Tauri et suivi de progression
     githubAuth.ts             # OAuth Device Flow
     githubService.ts          # création/listing de dépôts + login utilisateur via Octokit
+src-tauri/src/git_native.rs   # scan borné, statut Git, commit/push/pull/clone et annulation
 tailwind.config.js
 postcss.config.js
 tsconfig.json
 vite.config.ts
 src-tauri/
-  Cargo.toml                  # tauri-plugin-http, tauri-plugin-fs, tauri-plugin-dialog
+  Cargo.toml                  # Tauri, HTTP, dialogue et trousseau système
   build.rs
   tauri.conf.json
   src/main.rs
-  src/lib.rs                  # plugins, comptes sécurisés et autorisations du dossier choisi
-  capabilities/default.json   # permissions http (github.com/api.github.com), fs, dialog
+  src/lib.rs                  # plugins et comptes sécurisés
+  capabilities/default.json   # permissions HTTP GitHub, dialog et ouverture de liens
   icons/                      # icônes générées pour le logiciel
 ```
 
@@ -122,30 +121,29 @@ src-tauri/
 
 1. **Connexion** — Device Flow avec un code temporaire. Les comptes sont conservés dans le trousseau sécurisé du système (Keychain, Windows Credential Manager ou Secret Service sous Linux); la déconnexion ferme la session active sans supprimer les comptes mémorisés.
 2. **Dépôt** — `ZoneDepot` : glisser-déposer natif Tauri, donne un vrai chemin disque (pas un objet `File` du navigateur)
-3. **Analyse** — `projectAnalyzer` détecte le type de projet et les fichiers sensibles à partir des chemins.
-4. **Aperçu** — liste des fichiers et lecture seule des fichiers texte du projet sélectionné.
-5. **Publication / mise à jour** — création initiale du dépôt ou commit et synchronisation sans écrasement forcé.
-6. **Clonage** — dépôt GitHub public sans connexion ou dépôt privé avec un compte autorisé.
+3. **Analyse** — Rust parcourt les dossiers de façon incrémentale, ignore les répertoires générés et retourne au plus 500 chemins par page. Un cache à entrée unique limite les parcours répétés et le frontend conserve au maximum 2 000 chemins.
+4. **Aperçu** — une commande Rust autorise au plus 512 Kio de texte UTF-8 et refuse les binaires et les chemins qui sortent du projet.
+5. **Publication / mise à jour** — les commandes système Git gèrent statut, staging, commit et synchronisation; une seule opération Git longue tourne à la fois, avec délai maximal et annulation. L’indicateur de progression reste non bloquant et n’affiche pas de pourcentage estimé comme s’il était réel.
+6. **Clonage** — le clone est réalisé dans un dossier temporaire puis renommé vers la destination uniquement après succès.
 
-Toutes les actions sont câblées et fonctionnelles :
+Les parcours principaux sont câblés :
 - **Créer & publier** : initialise Git si nécessaire, crée le dépôt distant, commit et push.
 - **Mettre à jour** : commit et synchronisation non forcée du projet déjà associé.
 - **Cloner** : clone d’abord dans un dossier temporaire, puis le déplace à destination une fois terminé.
 
 ## Prochaines étapes concrètes
 
-1. Régénérer `src-tauri/` avec `npm create tauri-app@latest -- --template react-ts` pour une base à jour si besoin — ce scaffold est minimal
-2. Créer une OAuth App sur github.com/settings/developers avec le **Device Flow activé** (case à cocher + "Update application"), coller le `client_id` dans `githubAuth.ts`
-3. Gérer les conflits de "mise à jour" sans jargon : proposer "garder ma version" / "garder celle en ligne" plutôt que merge/rebase
-4. La portée filesystem est accordée dynamiquement au dossier sélectionné par l’utilisateur et à ses descendants; aucun accès global au disque n’est demandé.
+1. Créer une OAuth App sur github.com/settings/developers avec le **Device Flow activé** (case à cocher + "Update application"), puis configurer le `client_id` dans `githubAuth.ts`.
+2. Tester les opérations sur des dépôts réels volumineux, des dépôts privés, des annulations et des échecs réseau sur Windows, macOS et Linux.
+3. Pour les fichiers déjà présents dans des commits antérieurs, une exclusion du nouveau commit ne réécrit pas l’historique Git; leur retrait historique nécessite une opération distincte (par exemple Git LFS ou une réécriture explicitement confirmée).
 
 ## Points de vigilance
 
-- Ne jamais publier automatiquement les fichiers listés dans `sensitiveFiles` sans confirmation explicite
-- Toutes les requêtes réseau (auth ET opérations Git) passent par `@tauri-apps/plugin-http`, jamais par le `fetch` du navigateur — GitHub ne renvoie pas d'en-têtes CORS
-- Pas de backend distant nécessaire : le Device Flow ne demande pas de `client_secret`, et la couche native Tauri (http + fs + dialog) remplace le rôle qu'un serveur aurait eu
+- Les fichiers sensibles détectés sont automatiquement exclus du commit et ajoutés au `.gitignore`; cette détection par chemins n’est pas une garantie de détection exhaustive des secrets.
+- L’API GitHub passe par le plugin HTTP Tauri; les opérations Git utilisent le binaire Git installé sur le système et injectent le token sans l’ajouter à l’URL du remote.
+- Pas de backend distant nécessaire : le Device Flow ne demande pas de `client_secret`.
 - Le code de vérification expire rapidement; le jeton OAuth autorisé est conservé séparément dans le trousseau système jusqu’à révocation ou déconnexion.
-- Les commits locaux ignorent les dossiers de dépendances/compilation (`node_modules`, `target`, `dist`, etc.) et ne suivent pas les liens symboliques.
-- `tauriFsBridge.ts` reconstruit les codes d'erreur type `ENOENT` à partir des messages texte de `@tauri-apps/plugin-fs` (qui n'a pas d'objets d'erreur avec `.code` comme Node.js) — isomorphic-git en dépend pour son fonctionnement interne ; c'est un pont pragmatique, pas exhaustif (les liens symboliques par exemple ne sont pas finement gérés)
+- Les commits ignorent les répertoires générés connus, ne suivent pas les liens symboliques, avertissent au-delà de 50 Mio et excluent automatiquement les fichiers d’au moins 100 Mio de l’index courant.
+- L’utilisation du Git natif nécessite que Git soit installé et disponible dans le `PATH`.
 - `strict: true` est activé dans `tsconfig.json` — garde-le
 # projet-github-simplifier
