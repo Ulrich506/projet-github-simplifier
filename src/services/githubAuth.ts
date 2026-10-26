@@ -20,6 +20,15 @@ import type { DeviceCodeResponse } from "../types";
  */
 
 const CLIENT_ID = "Ov23liDVMdqbQFzWBLBZ"; // OAuth App créée sur github.com/settings/developers
+const HTTP_TIMEOUT_MS = 30_000;
+const CONNECT_TIMEOUT_MS = 15_000;
+
+function requeteAvecDelai(): { connectTimeout: number; signal: AbortSignal } {
+  return {
+    connectTimeout: CONNECT_TIMEOUT_MS,
+    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+  };
+}
 
 interface AccessTokenResponse {
   access_token?: string;
@@ -29,6 +38,7 @@ interface AccessTokenResponse {
 
 export async function demarrerConnexion(): Promise<DeviceCodeResponse> {
   const res = await tauriFetch("https://github.com/login/device/code", {
+    ...requeteAvecDelai(),
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -66,6 +76,7 @@ export async function attendreValidation(
   while (Date.now() < dateLimite) {
     await new Promise((r) => setTimeout(r, intervalleActuel * 1000));
     const res = await tauriFetch("https://github.com/login/oauth/access_token", {
+      ...requeteAvecDelai(),
       method: "POST",
       headers: {
         Accept: "application/json",

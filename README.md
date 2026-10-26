@@ -121,10 +121,12 @@ src-tauri/
 
 1. **Connexion** — Device Flow avec un code temporaire. Les comptes sont conservés dans le trousseau sécurisé du système (Keychain, Windows Credential Manager ou Secret Service sous Linux); la déconnexion ferme la session active sans supprimer les comptes mémorisés.
 2. **Dépôt** — `ZoneDepot` : glisser-déposer natif Tauri, donne un vrai chemin disque (pas un objet `File` du navigateur)
-3. **Analyse** — Rust parcourt les dossiers de façon incrémentale, ignore les répertoires générés et retourne au plus 500 chemins par page. Un cache à entrée unique limite les parcours répétés et le frontend conserve au maximum 2 000 chemins.
+3. **Analyse** — une détection Rust rapide identifie d’abord le type et la racine Git sans parcourir l’arborescence. Le projet s’affiche ensuite pendant que le scan structurel annulable s’exécute hors du thread UI; sa progression indique le nombre réel de fichiers examinés, sans total estimé. Le parcours Rust n’accumule jamais l’arborescence complète : un cache temporaire de 30 secondes retient au plus 2 000 chemins (500 par page), et le frontend conserve la même limite.
 4. **Aperçu** — une commande Rust autorise au plus 512 Kio de texte UTF-8 et refuse les binaires et les chemins qui sortent du projet.
 5. **Publication / mise à jour** — les commandes système Git gèrent statut, staging, commit et synchronisation; une seule opération Git longue tourne à la fois, avec délai maximal et annulation. L’indicateur de progression reste non bloquant et n’affiche pas de pourcentage estimé comme s’il était réel.
 6. **Clonage** — le clone est réalisé dans un dossier temporaire puis renommé vers la destination uniquement après succès.
+
+Les erreurs de publication, synchronisation et clonage affichent un diagnostic local avec identifiant, étape, catégorie, durée et détail technique assaini. Les opérations REST GitHub ont un délai maximal par requête; seuls les GET/HEAD transitoirement échoués sont retentés au plus deux fois. Les créations de dépôts (POST) ne sont jamais retentées automatiquement. Une répétition manuelle n’est proposée que pour des étapes idempotentes ou nettoyées après échec.
 
 Les parcours principaux sont câblés :
 - **Créer & publier** : initialise Git si nécessaire, crée le dépôt distant, commit et push.
@@ -145,5 +147,6 @@ Les parcours principaux sont câblés :
 - Le code de vérification expire rapidement; le jeton OAuth autorisé est conservé séparément dans le trousseau système jusqu’à révocation ou déconnexion.
 - Les commits ignorent les répertoires générés connus, ne suivent pas les liens symboliques, avertissent au-delà de 50 Mio et excluent automatiquement les fichiers d’au moins 100 Mio de l’index courant.
 - L’utilisation du Git natif nécessite que Git soit installé et disponible dans le `PATH`.
+- Les opérations REST GitHub vérifient les statuts HTTP; les erreurs 401/403/404/422 et les limites de débit sont classées à partir des réponses reçues. Les détails de diagnostic masquent les jetons usuels et les chemins personnels courants.
 - `strict: true` est activé dans `tsconfig.json` — garde-le
 # projet-github-simplifier

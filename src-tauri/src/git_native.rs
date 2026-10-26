@@ -45,6 +45,7 @@ struct CachedProjectScan {
     root: PathBuf,
     analysis: ProjectAnalysis,
     files: Vec<String>,
+    scanned_at: Instant,
 }
 
 fn cached_scan_page(
@@ -60,9 +61,10 @@ fn cached_scan_page(
         .cloned()
         .collect::<Vec<_>>();
     let end = offset.saturating_add(files.len());
+    let has_more = end < MAX_CACHED_PROJECT_PATHS && (end as u64) < cached.analysis.file_count;
     ProjectScan {
         analysis: cached.analysis,
-        has_more: end < MAX_CACHED_PROJECT_PATHS && end < cached.files.len(),
+        has_more,
         files,
     }
 }
@@ -225,7 +227,11 @@ fn emit_progress(
 
 fn command_for(dir: &Path, args: &[String], token: Option<&str>) -> Command {
     let mut command = Command::new("git");
-    command.arg("-C").arg(dir).args(args);
+    command
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::null());
     command.env("GIT_TERMINAL_PROMPT", "0");
     let mut config = vec![
         ("pack.threads", "1".to_string()),
@@ -290,7 +296,13 @@ fn run_git(
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
         .spawn()
-        .map_err(|error| format!("Impossible de démarrer Git. Vérifiez que Git est installé : {error}"))?;
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                format!("GIT_NOT_INSTALLED: {error}")
+            } else {
+                format!("Impossible de démarrer Git : {error}")
+            }
+        })?;
     let stdout = child.stdout.take().ok_or("Sortie Git indisponible.")?;
     let stderr = child.stderr.take().ok_or("Sortie Git indisponible.")?;
     let (sender, receiver) = std::sync::mpsc::sync_channel::<(bool, Vec<u8>)>(8);
@@ -333,46 +345,62 @@ fn run_git(
         stderr: Vec::new(),
     };
     let mut exit_status = None;
+    let mut output_closed = false;
     let mut last_progress_event = Instant::now() - Duration::from_secs(1);
     loop {
-        match receiver.recv_timeout(Duration::from_millis(30)) {
-            Ok((is_stdout, bytes)) => {
-                let destination = if is_stdout {
-                    &mut result.stdout
-                } else {
-                    &mut result.stderr
-                };
-                let room = MAX_CAPTURE_BYTES.saturating_sub(destination.len());
-                destination.extend_from_slice(&bytes[..bytes.len().min(room)]);
-                if !is_stdout && last_progress_event.elapsed() >= Duration::from_millis(100) {
-                    let text = String::from_utf8_lossy(&bytes);
-                    if let Some(line) = text.lines().find(|line| !line.trim().is_empty()) {
-                        emit_progress(app, operation_id, line, None, None);
-                        last_progress_event = Instant::now();
+        if !output_closed {
+            match receiver.recv_timeout(Duration::from_millis(30)) {
+                Ok((is_stdout, bytes)) => {
+                    let destination = if is_stdout {
+                        &mut result.stdout
+                    } else {
+                        &mut result.stderr
+                    };
+                    let room = MAX_CAPTURE_BYTES.saturating_sub(destination.len());
+                    destination.extend_from_slice(&bytes[..bytes.len().min(room)]);
+                    if !is_stdout && last_progress_event.elapsed() >= Duration::from_millis(100) {
+                        let text = String::from_utf8_lossy(&bytes);
+                        if let Some(line) = text.lines().find(|line| !line.trim().is_empty()) {
+                            emit_progress(app, operation_id, line, None, None);
+                            last_progress_event = Instant::now();
+                        }
                     }
                 }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => output_closed = true,
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
         }
 
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            break;
+            drop(receiver);
+            let _ = stdout_thread.join();
+            let _ = stderr_thread.join();
+            return Err("GIT_OPERATION_CANCELLED".to_string());
         }
         if started.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
+            drop(receiver);
             let _ = stdout_thread.join();
             let _ = stderr_thread.join();
             return Err("GIT_OPERATION_TIMEOUT".to_string());
         }
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| format!("Impossible de suivre le processus Git : {error}"))?
-        {
-            exit_status = Some(status);
+        if exit_status.is_none() {
+            match child.try_wait() {
+                Ok(status) => exit_status = status,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    drop(receiver);
+                    let _ = stdout_thread.join();
+                    let _ = stderr_thread.join();
+                    return Err(format!("Impossible de suivre le processus Git : {error}"));
+                }
+            }
+        }
+        if output_closed && exit_status.is_some() {
             break;
         }
     }
@@ -396,21 +424,93 @@ fn run_git(
 }
 
 fn run_simple(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = Command::new("git")
+    let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|error| format!("Impossible de démarrer Git. Vérifiez son installation : {error}"))?;
-    if !output.status.success() {
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                format!("GIT_NOT_INSTALLED: {error}")
+            } else {
+                format!("Impossible de démarrer Git : {error}")
+            }
+        })?;
+    let stdout = child.stdout.take().ok_or("Sortie standard Git indisponible.")?;
+    let stderr = child.stderr.take().ok_or("Sortie d’erreur Git indisponible.")?;
+    let stdout_capture = Arc::new(Mutex::new(Vec::new()));
+    let stderr_capture = Arc::new(Mutex::new(Vec::new()));
+    let stdout_thread = capture_process_output(stdout, stdout_capture.clone());
+    let stderr_thread = capture_process_output(stderr, stderr_capture.clone());
+    let started = Instant::now();
+    let status = loop {
+        if started.elapsed() > PROCESS_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_thread.join();
+            let _ = stderr_thread.join();
+            return Err("GIT_OPERATION_TIMEOUT".to_string());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(format!("Impossible de suivre le processus Git : {error}"));
+            }
+        }
+    };
+    stdout_thread
+        .join()
+        .map_err(|_| "Impossible de récupérer la sortie Git.".to_string())?
+        .map_err(|error| format!("Impossible de lire la sortie Git : {error}"))?;
+    stderr_thread
+        .join()
+        .map_err(|_| "Impossible de récupérer l’erreur Git.".to_string())?
+        .map_err(|error| format!("Impossible de lire l’erreur Git : {error}"))?;
+    let stdout = stdout_capture
+        .lock()
+        .map_err(|_| "Impossible de récupérer la sortie Git.".to_string())?
+        .clone();
+    let stderr = stderr_capture
+        .lock()
+        .map_err(|_| "Impossible de récupérer l’erreur Git.".to_string())?
+        .clone();
+    if !status.success() {
         return Err(format!(
             "GIT_NATIVE_ERROR:{}:{}",
-            output.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&output.stderr).trim()
+            status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&stderr).trim()
         ));
     }
-    Ok(output.stdout)
+    Ok(stdout)
+}
+
+fn capture_process_output<R: Read + Send + 'static>(
+    mut reader: R,
+    captured: Arc<Mutex<Vec<u8>>>,
+) -> thread::JoinHandle<std::io::Result<()>> {
+    thread::spawn(move || {
+        let mut buffer = [0u8; 8192];
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                return Ok(());
+            }
+            let mut output = captured.lock().map_err(|_| {
+                std::io::Error::other("Le tampon de sortie Git est indisponible.")
+            })?;
+            let room = MAX_CAPTURE_BYTES.saturating_sub(output.len());
+            output.extend_from_slice(&buffer[..read.min(room)]);
+        }
+    })
 }
 
 fn run_with_operation<T: Send + 'static>(
@@ -616,21 +716,26 @@ struct DirectoryFrame {
 
 #[tauri::command]
 pub async fn git_scan_project(
+    app: AppHandle,
     operations: State<'_, GitOperations>,
     dir: String,
     offset: usize,
     limit: usize,
+    operation_id: String,
 ) -> Result<ProjectScan, String> {
     let cache = operations.project_scan_cache.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    run_with_operation_async(app, operations.cancellations.clone(), operation_id, move |app, id, cancel| {
         let root = validate_dir(&dir)?;
         let page_limit = limit.clamp(1, PAGE_SIZE_MAX);
+        emit_progress(&app, &id, "scan-project", Some(0), None);
         if offset > 0 {
             let cached = cache
                 .lock()
                 .map_err(|_| "Impossible de consulter le cache d’analyse.".to_string())?
                 .clone();
-            if let Some(cached) = cached.filter(|cached| cached.root == root) {
+            if let Some(cached) = cached.filter(|cached| {
+                cached.root == root && cached.scanned_at.elapsed() < Duration::from_secs(30)
+            }) {
                 return Ok(cached_scan_page(cached, offset, page_limit));
             }
         }
@@ -640,7 +745,7 @@ pub async fn git_scan_project(
             relative: PathBuf::new(),
             entries: root_entries,
         }];
-        let mut files = Vec::with_capacity(page_limit);
+        let mut cached_files = Vec::with_capacity(MAX_CACHED_PROJECT_PATHS);
         let mut sensitive_files = Vec::new();
         let mut root_files = HashSet::new();
         let mut file_count = 0u64;
@@ -648,6 +753,9 @@ pub async fn git_scan_project(
         let has_existing_git = root.join(".git").exists();
 
         while let Some(frame) = stack.last_mut() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("GIT_OPERATION_CANCELLED".to_string());
+            }
             if scan_started.elapsed() > PROCESS_TIMEOUT {
                 return Err("GIT_OPERATION_TIMEOUT".to_string());
             }
@@ -657,7 +765,6 @@ pub async fn git_scan_project(
                     stack.pop();
                     continue;
                 }
-
             };
             let file_type = entry.file_type().map_err(|error| format!("Impossible de lire les métadonnées du projet : {error}"))?;
             let name = entry.file_name();
@@ -673,18 +780,15 @@ pub async fn git_scan_project(
                 let child_path = entry.path();
                 let entries = fs::read_dir(&child_path)
                     .map_err(|error| format!("Impossible de parcourir un sous-dossier : {error}"))?;
-                stack.push(DirectoryFrame {
-                    relative,
-                    entries,
-                });
+                stack.push(DirectoryFrame { relative, entries });
                 continue;
             }
             if !file_type.is_file() {
                 continue;
             }
             file_count += 1;
-            if relative.parent().is_some_and(|parent| parent.as_os_str().is_empty()) {
-                if matches!(
+            if relative.parent().is_some_and(|parent| parent.as_os_str().is_empty())
+                && matches!(
                     name_string.as_str(),
                     "package.json"
                         | "requirements.txt"
@@ -694,43 +798,82 @@ pub async fn git_scan_project(
                         | "build.gradle.kts"
                         | "Cargo.toml"
                         | "index.html"
-                ) {
-                    root_files.insert(name_string);
-                }
+                )
+            {
+                root_files.insert(name_string);
             }
             let relative_string = relative.to_string_lossy().replace('\\', "/");
             if sensitive_path(&relative) && sensitive_files.len() < PAGE_SIZE_MAX {
                 sensitive_files.push(relative_string.clone());
             }
-            if file_count > offset as u64 && files.len() < page_limit {
-                files.push(relative_string);
+            if cached_files.len() < MAX_CACHED_PROJECT_PATHS {
+                cached_files.push(relative_string);
+            }
+            if file_count % 256 == 0 {
+                emit_progress(&app, &id, "scan-project", Some(file_count), None);
             }
         }
         let (project_type, suggested_gitignore) = detect_project_type(&root_files);
         let project_analysis = ProjectAnalysis {
-                project_type,
-                suggested_gitignore,
-                has_existing_git,
-                sensitive_files,
-                file_count,
-            };
-        let cached_files = files.iter().take(MAX_CACHED_PROJECT_PATHS).cloned().collect();
+            project_type,
+            suggested_gitignore,
+            has_existing_git,
+            sensitive_files,
+            file_count,
+        };
+        eprintln!(
+            "project-scan files={} elapsed_ms={}",
+            file_count,
+            scan_started.elapsed().as_millis()
+        );
+        let cached = CachedProjectScan {
+            root,
+            analysis: project_analysis,
+            files: cached_files,
+            scanned_at: Instant::now(),
+        };
         *cache
             .lock()
             .map_err(|_| "Impossible de mettre à jour le cache d’analyse.".to_string())? =
-            Some(CachedProjectScan {
-                root,
-                analysis: project_analysis.clone(),
-                files: cached_files,
-            });
-        Ok(ProjectScan {
-            analysis: project_analysis,
-            has_more: file_count > offset.saturating_add(page_limit) as u64,
-            files,
+            Some(cached.clone());
+        emit_progress(&app, &id, "scan-project", Some(file_count), Some(file_count));
+        Ok(cached_scan_page(cached, offset, page_limit))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_detect_project(dir: String) -> Result<ProjectAnalysis, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = Instant::now();
+        let root = validate_dir(&dir)?;
+        let mut root_files = HashSet::new();
+        for name in [
+            "package.json",
+            "requirements.txt",
+            "pyproject.toml",
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+            "Cargo.toml",
+            "index.html",
+        ] {
+            if root.join(name).is_file() {
+                root_files.insert(name.to_string());
+            }
+        }
+        let (project_type, suggested_gitignore) = detect_project_type(&root_files);
+        eprintln!("project-detect elapsed_ms={}", started.elapsed().as_millis());
+        Ok(ProjectAnalysis {
+            project_type,
+            suggested_gitignore,
+            has_existing_git: root.join(".git").exists(),
+            sensitive_files: Vec::new(),
+            file_count: 0,
         })
     })
     .await
-    .map_err(|error| format!("L’analyse du projet a échoué : {error}"))?
+    .map_err(|error| format!("La détection rapide du projet a échoué : {error}"))?
 }
 
 #[tauri::command]
@@ -797,12 +940,19 @@ fn stream_nul_output(
         .arg("-C")
         .arg(root)
         .args(args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("GIT_TERMINAL_PROMPT", "0");
     let mut child = command
         .spawn()
-        .map_err(|error| format!("Impossible de démarrer Git : {error}"))?;
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                format!("GIT_NOT_INSTALLED: {error}")
+            } else {
+                format!("Impossible de démarrer Git : {error}")
+            }
+        })?;
     let stdout = child.stdout.take().ok_or("Sortie de statut Git indisponible.")?;
     let stderr = child.stderr.take().ok_or("Sortie d’erreur Git indisponible.")?;
     let (sender, receiver) = std::sync::mpsc::sync_channel::<Result<Vec<u8>, String>>(16);
@@ -832,15 +982,9 @@ fn stream_nul_output(
             }
         }
     });
-    let stderr_thread = thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut buffer = [0u8; 4096];
-        while let Ok(read) = reader.read(&mut buffer) {
-            if read == 0 {
-                break;
-            }
-        }
-    });
+    drop(sender);
+    let stderr_capture = Arc::new(Mutex::new(Vec::new()));
+    let stderr_thread = capture_process_output(stderr, stderr_capture.clone());
 
     let started = Instant::now();
     let mut stdout_closed = false;
@@ -851,6 +995,7 @@ fn stream_nul_output(
                 if let Err(error) = on_record(&record) {
                     let _ = child.kill();
                     let _ = child.wait();
+                    drop(receiver);
                     let _ = stdout_thread.join();
                     let _ = stderr_thread.join();
                     return Err(error);
@@ -859,6 +1004,7 @@ fn stream_nul_output(
             Ok(Err(error)) => {
                 let _ = child.kill();
                 let _ = child.wait();
+                drop(receiver);
                 let _ = stdout_thread.join();
                 let _ = stderr_thread.join();
                 return Err(error);
@@ -869,6 +1015,7 @@ fn stream_nul_output(
         if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             let _ = child.kill();
             let _ = child.wait();
+            drop(receiver);
             let _ = stdout_thread.join();
             let _ = stderr_thread.join();
             return Err("GIT_OPERATION_CANCELLED".to_string());
@@ -876,22 +1023,43 @@ fn stream_nul_output(
         if started.elapsed() > PROCESS_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
+            drop(receiver);
             let _ = stdout_thread.join();
             let _ = stderr_thread.join();
             return Err("GIT_OPERATION_TIMEOUT".to_string());
         }
         if exit_status.is_none() {
-            exit_status = child
-                .try_wait()
-                .map_err(|error| format!("Impossible de suivre le statut Git : {error}"))?;
+            match child.try_wait() {
+                Ok(status) => exit_status = status,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    drop(receiver);
+                    let _ = stdout_thread.join();
+                    let _ = stderr_thread.join();
+                    return Err(format!("Impossible de suivre le statut Git : {error}"));
+                }
+            }
         }
     }
 
     let _ = stdout_thread.join();
-    let _ = stderr_thread.join();
+    stderr_thread
+        .join()
+        .map_err(|_| "Impossible de récupérer l’erreur Git.".to_string())?
+        .map_err(|error| format!("Impossible de lire l’erreur Git : {error}"))?;
+    let stderr = stderr_capture
+        .lock()
+        .map_err(|_| "Impossible de récupérer l’erreur Git.".to_string())?
+        .clone();
     match exit_status {
         Some(status) if status.success() => Ok(()),
-        _ => Err("GIT_STATUS_FAILED".to_string()),
+        Some(status) => Err(format!(
+            "GIT_NATIVE_ERROR:{}:{}",
+            status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&stderr).trim()
+        )),
+        None => Err("GIT_STATUS_FAILED".to_string()),
     }
 }
 
@@ -1425,6 +1593,29 @@ pub async fn git_list_sensitive_tracked(dir: String) -> Result<Vec<String>, Stri
 mod tests {
     use super::*;
 
+    struct TemporaryGitProject(PathBuf);
+
+    impl TemporaryGitProject {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "gsimplifie-git-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock should be after the Unix epoch")
+                    .as_nanos()
+            ));
+            fs::create_dir(&path).expect("create isolated Git test directory");
+            Self(path)
+        }
+    }
+
+    impl Drop for TemporaryGitProject {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn base64_encodes_github_basic_auth() {
         assert_eq!(base64_basic("x-access-token:token"), "eC1hY2Nlc3MtdG9rZW46dG9rZW4=");
@@ -1470,9 +1661,47 @@ mod tests {
                 file_count: 3,
             },
             files: vec!["a.txt".to_string(), "b.txt".to_string(), "c.txt".to_string()],
+            scanned_at: Instant::now(),
         };
         let page = cached_scan_page(cached, 1, 1);
         assert_eq!(page.files, vec!["b.txt"]);
         assert!(page.has_more);
+    }
+
+    #[test]
+    fn cached_scan_stops_pagination_at_the_path_limit() {
+        let cached = CachedProjectScan {
+            root: PathBuf::from("/project"),
+            analysis: ProjectAnalysis {
+                project_type: "static".to_string(),
+                suggested_gitignore: String::new(),
+                has_existing_git: false,
+                sensitive_files: Vec::new(),
+                file_count: (MAX_CACHED_PROJECT_PATHS + 1) as u64,
+            },
+            files: (0..MAX_CACHED_PROJECT_PATHS)
+                .map(|index| format!("file-{index}.txt"))
+                .collect(),
+            scanned_at: Instant::now(),
+        };
+        let page = cached_scan_page(cached, MAX_CACHED_PROJECT_PATHS - PAGE_SIZE_MAX, PAGE_SIZE_MAX);
+        assert_eq!(page.files.len(), PAGE_SIZE_MAX);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn simple_git_commands_check_exit_status_and_capture_output() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let project = TemporaryGitProject::new();
+        run_simple(&project.0, &["init"]).expect("initialize isolated test repository");
+        let status = run_simple(&project.0, &["status", "--short"]).expect("read Git status");
+        assert!(status.is_empty());
+
+        let failure = run_simple(&project.0, &["not-a-real-git-subcommand"])
+            .expect_err("unknown Git subcommand must fail");
+        assert!(failure.starts_with("GIT_NATIVE_ERROR:"));
+        assert!(failure.contains("not-a-real-git-subcommand"));
     }
 }

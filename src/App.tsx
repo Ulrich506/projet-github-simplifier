@@ -30,12 +30,23 @@ import { CloneWizard } from "./components/CloneWizard";
 import { ProgressOverlay } from "./components/ProgressOverlay";
 import { SettingsModal, type AccentColor, type ThemeMode } from "./components/SettingsModal";
 import { ZoneDepot } from "./components/ZoneDepot";
-import { scannerProjet } from "./services/projectAnalyzer";
+import {
+  creerIdAnalyseProjet,
+  detecterProjetRapidement,
+  scannerProjet,
+} from "./services/projectAnalyzer";
+import {
+  creerDiagnosticOperation,
+  journalOperationSuccess,
+  messageDiagnostic,
+  type OperationDiagnostic,
+} from "./services/operationError";
 import { setProgression, type ProgressionAffichee } from "./services/progressStore";
 import {
   associerDepotDistant,
   ajouterEtCommiter,
   annulerOperationsGit,
+  annulerOperationGit,
   ignorerFichierSensible,
   initialiserDepot,
   mettreAJour,
@@ -46,7 +57,12 @@ import {
   type CommitPreparation,
   type EtatDepot,
 } from "./services/gitService";
-import { creerOuRecupererDepot, listerDepots, obtenirUtilisateurConnecte } from "./services/githubService";
+import {
+  creerOuRecupererDepot,
+  listerDepots,
+  obtenirUtilisateurConnecte,
+  verifierPublication,
+} from "./services/githubService";
 import type { AnalyseProjet, DepotGitHub, ProgressionGit } from "./types";
 import {
   getInitialLanguage,
@@ -67,51 +83,13 @@ function isGitHubUrl(url: string): boolean {
   return /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?\/?$/i.test(url.trim());
 }
 
-function nettoyerDetailErreur(value: unknown, token: string | null): unknown {
-  if (typeof value !== "string") return value;
-  let detail = value;
-  if (token) detail = detail.split(token).join("[TOKEN REDACTED]");
-  return detail
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "[TOKEN REDACTED]")
-    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9+/=_-]+/gi, "$1 [REDACTED]")
-    .replace(/https:\/\/[^/\s:@]+:[^/\s@]+@/gi, "https://[REDACTED]@")
-    .slice(0, 1200);
-}
-
-function detailsTechniquesErreur(cause: unknown, token: string | null): Record<string, unknown> {
-  const details: Record<string, unknown> = {};
-  const visited = new Set<object>();
-
-  function read(value: unknown, depth: number): void {
-    if (value == null || depth > 3) return;
-    if (typeof value === "string") {
-      if (!details.message) details.message = nettoyerDetailErreur(value, token);
-      return;
-    }
-    if (typeof value !== "object" || visited.has(value)) return;
-    visited.add(value);
-    const record = value as Record<string, unknown>;
-    for (const key of ["name", "message", "code", "status", "statusCode", "statusMessage", "caller", "stderr"]) {
-      const item = record[key];
-      if (typeof item === "string" || typeof item === "number") {
-        details[key] = typeof item === "string" ? nettoyerDetailErreur(item, token) : item;
-      }
-    }
-    read(record.cause, depth + 1);
-    read(record.error, depth + 1);
-    read(record.data, depth + 1);
-    if (record.response && typeof record.response === "object") {
-      const response = record.response as Record<string, unknown>;
-      if (typeof response.status === "number") details.httpStatus = response.status;
-      read(response.data, depth + 1);
-    }
+async function verifierPublicationDistante(token: string, remoteUrl: string, branch: string): Promise<void> {
+  const remote = new URL(remoteUrl);
+  const [owner, repository] = remote.pathname.split("/").filter(Boolean);
+  if (remote.hostname !== "github.com" || !owner || !repository) {
+    throw new Error("L’adresse du dépôt GitHub distant est invalide.");
   }
-
-  read(cause, 0);
-  if (!Object.keys(details).length) {
-    details.message = nettoyerDetailErreur(String(cause), token);
-  }
-  return details;
+  await verifierPublication(token, owner, repository.replace(/\.git$/i, ""), branch);
 }
 
 function messageExclusionsAutomatiques(preparation: CommitPreparation, lang: Language): string {
@@ -172,6 +150,7 @@ export default function App() {
   const [projectFiles, setProjectFiles] = useState<string[]>([]);
   const [projectFilesHasMore, setProjectFilesHasMore] = useState(false);
   const [analysis, setAnalysis] = useState<AnalyseProjet | null>(null);
+  const [analysisComplete, setAnalysisComplete] = useState(false);
   const [repoState, setRepoState] = useState<EtatDepot | null>(null);
   const [trackedSensitive, setTrackedSensitive] = useState<string[]>([]);
   const [remoteInput, setRemoteInput] = useState("");
@@ -183,6 +162,8 @@ export default function App() {
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneParent, setCloneParent] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [operationDiagnostic, setOperationDiagnostic] = useState<OperationDiagnostic | null>(null);
+  const [retryAction, setRetryAction] = useState<(() => Promise<void>) | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [securityNoteVisible, setSecurityNoteVisible] = useState(true);
@@ -201,6 +182,7 @@ export default function App() {
   const refreshRequests = useRef<{ resolve: () => void; reject: (cause: unknown) => void; keepBusy: boolean }[]>([]);
   const refreshDirectory = useRef<string | null>(null);
   const selectionEnCours = useRef(false);
+  const projectScanOperationId = useRef<string | null>(null);
   const hideCommit = useCallback((oid: string) => {
     setHiddenCommits((current) => current.includes(oid) ? current : [...current, oid]);
   }, []);
@@ -221,72 +203,48 @@ export default function App() {
     );
   }, [lang, t.syncStep.commitMsgPlaceholder]);
 
-  const displayError = useCallback((err: unknown): string => {
-    return translateError(err, lang);
-  }, [lang]);
-
-  const triggerUIErrorNotification = useCallback((message: string) => {
-    setError(message);
-    setNotice(null);
-  }, []);
-
   const openSettingsTokenModal = useCallback(() => {
     setAccountPickerOpen(true);
     setError(null);
+    setOperationDiagnostic(null);
     setNotice(null);
   }, []);
 
-  const handleGitError = useCallback((cause: unknown, operation = "GitHub/Git"): string => {
-    const technicalDetails = detailsTechniquesErreur(cause, auth.token);
-    console.error(`[Gsimplifié] Échec de l’opération ${operation}`, technicalDetails);
-    const raw = Object.values(technicalDetails).join(" ").toLowerCase();
-    const text = displayError(cause);
-    const status = Number(technicalDetails.statusCode ?? technicalDetails.httpStatus ?? technicalDetails.status);
-    const unauthorized = status === 401 || /\b401\b|bad credentials|authentication failed|could not authenticate|unauthorized/i.test(raw);
-    const repositoryNotFound = status === 404 || /\b404\b|repository not found|repo not found/i.test(raw);
-    const forbidden = status === 403 || /\b403\b|http error:\s*403|github.{0,40}forbidden|forbidden.{0,40}github/i.test(raw);
-
-    if (repositoryNotFound || unauthorized) {
-      const friendlyMessage = lang === "fr"
-        ? repositoryNotFound
-          ? "Dépôt GitHub introuvable ou inaccessible. Vérifiez l’URL et les droits de votre compte, puis réessayez."
-          : "La session GitHub a expiré ou n’est plus valide. Choisissez un compte enregistré ou reconnectez-vous."
-        : lang === "es"
-          ? repositoryNotFound
-            ? "No se encontró el repositorio de GitHub o no tienes acceso. Comprueba la URL y los permisos de tu cuenta."
-            : "La sesión de GitHub ha caducado o no es válida. Selecciona una cuenta guardada o vuelve a conectarte."
-          : repositoryNotFound
-            ? "GitHub repository not found or inaccessible. Check the URL and your account permissions, then try again."
-            : "Your GitHub session has expired or is invalid. Select a saved account or sign in again.";
-      triggerUIErrorNotification(friendlyMessage);
-      const currentToken = auth.token;
-      if (unauthorized || !currentToken) {
-        openSettingsTokenModal();
-      } else if (repositoryNotFound && currentToken) {
-        void (async () => {
-          try {
-            await obtenirUtilisateurConnecte(currentToken);
-          } catch {
-            openSettingsTokenModal();
-          }
-        })();
-      }
-      return friendlyMessage;
-    }
-
-    if (forbidden) {
-      const permissionMessage = lang === "fr"
-        ? "GitHub refuse cette opération. Vérifiez les droits d’écriture du compte sur le dépôt, la protection de la branche et, pour une organisation, l’autorisation SSO."
-        : lang === "es"
-          ? "GitHub rechazó la operación. Comprueba los permisos de escritura, la protección de la rama y la autorización SSO de la organización."
-          : "GitHub denied this operation. Check the account's write access, branch protection, and organization SSO authorization.";
-      triggerUIErrorNotification(permissionMessage);
-      return permissionMessage;
-    }
-
-    triggerUIErrorNotification(text);
-    return text;
-  }, [auth.token, displayError, lang, openSettingsTokenModal, triggerUIErrorNotification]);
+  const handleGitError = useCallback((
+    cause: unknown,
+    operation = "GitHub/Git",
+    startedAt = performance.now(),
+    step = "unknown"
+  ): string => {
+    const diagnostic = creerDiagnosticOperation(cause, operation, step, startedAt, auth.token);
+    const translated = translateError(cause, lang);
+    const genericMessages = [
+      "L’opération n’a pas abouti. Réessayez. Si le problème persiste, vérifiez l’accès au projet et à GitHub.",
+      "Une erreur inattendue est survenue. Réessayez. Si le problème persiste, vérifiez l’accès au projet et à GitHub.",
+      "Se produjo un error al realizar la operación. Vuelve a intentarlo y comprueba los permisos del proyecto y de GitHub.",
+      "Se produjo un error inesperado. Vuelve a intentarlo y comprueba el acceso al proyecto y a GitHub.",
+      "The operation could not be completed. Retry and check access to the project and GitHub.",
+      "An unexpected error occurred. Retry and check access to the project and GitHub.",
+    ];
+    const message = translated && !genericMessages.includes(translated)
+      ? translated
+      : messageDiagnostic(diagnostic.category, lang);
+    console.error("[Gsimplifié] Échec d’opération", {
+      id: diagnostic.id,
+      operation: diagnostic.operation,
+      step: diagnostic.step,
+      category: diagnostic.category,
+      code: diagnostic.code,
+      retryable: diagnostic.retryable,
+      technicalDetails: diagnostic.technicalDetails,
+    });
+    if (diagnostic.category === "AUTHENTICATION_ERROR") openSettingsTokenModal();
+    setOperationDiagnostic(diagnostic);
+    setRetryAction(null);
+    setError(message);
+    setNotice(null);
+    return message;
+  }, [auth.token, lang, openSettingsTokenModal]);
 
   function updateProgress(next: ProgressionAffichee | null) {
     setProgression(next ? { label: next.label, complete: next.complete } : null);
@@ -335,41 +293,91 @@ export default function App() {
   const selectProject = useCallback(async (path: string, keepBusy = false) => {
     if (selectionEnCours.current || (busy && !keepBusy)) return;
     selectionEnCours.current = true;
+    const operationId = creerIdAnalyseProjet();
+    projectScanOperationId.current = operationId;
     setBusy(true);
     setError(null);
+    setOperationDiagnostic(null);
+    setRetryAction(null);
     setNotice(null);
+    setProgression(null);
     try {
-      const scan = await scannerProjet(path);
-      const result = scan.analysis;
-      const rootIsGit = result.hasExistingGit;
-      let remoteUrl: string | null = null;
-      let gitState: EtatDepot | null = null;
-      let tracked: string[] = [];
-      if (rootIsGit) {
-        [gitState, tracked] = await Promise.all([
-          obtenirEtatDepot(path),
-          obtenirFichiersSensiblesSuivis(path),
-        ]);
-        remoteUrl = gitState.remoteUrl;
-      }
+      const preliminary = await detecterProjetRapidement(path);
       setDirectory(path);
       activeProjectDirectory.current = path;
-      setProjectFiles(scan.files);
-      setProjectFilesHasMore(scan.hasMore && scan.files.length < MAX_PROJECT_FILES_IN_MEMORY);
-      setAnalysis(result);
-      setRepoState(gitState);
-      setTrackedSensitive(tracked);
-      setRemoteInput(remoteUrl ?? "");
+      setProjectFiles([]);
+      setProjectFilesHasMore(false);
+      setAnalysis(preliminary);
+      setAnalysisComplete(false);
+      setRepoState(null);
+      setTrackedSensitive([]);
+      setRemoteInput("");
       setReplaceRemoteConfirmed(false);
       setHiddenCommits([]);
       setStep(1);
+
+      const scan = await scannerProjet(path, 0, 500, {
+        operationId,
+        onProgress: ({ phase, loaded }) => {
+          if (!phase.includes("scan-project")) return;
+          const count = (loaded ?? 0).toLocaleString(lang === "fr" ? "fr-FR" : lang === "es" ? "es-ES" : "en-US");
+          setProgression({
+            label: lang === "fr"
+              ? `Analyse du dossier… ${count} fichiers examinés`
+              : lang === "es"
+                ? `Analizando la carpeta… ${count} archivos examinados`
+                : `Analyzing folder… ${count} files examined`,
+            complete: false,
+          });
+        },
+      });
+      if (activeProjectDirectory.current !== path) return;
+      setProjectFiles(scan.files);
+      setProjectFilesHasMore(scan.hasMore && scan.files.length < MAX_PROJECT_FILES_IN_MEMORY);
+      setAnalysis(scan.analysis);
+      setAnalysisComplete(true);
+
+      if (!keepBusy) {
+        setBusy(false);
+        setProgression(null);
+      }
+      if (projectScanOperationId.current === operationId) projectScanOperationId.current = null;
+
+      if (scan.analysis.hasExistingGit) {
+        const loadGitState = async () => {
+          try {
+            const [gitState, tracked] = await Promise.all([
+              obtenirEtatDepot(path),
+              obtenirFichiersSensiblesSuivis(path),
+            ]);
+            if (activeProjectDirectory.current !== path) return;
+            setRepoState(gitState);
+            setTrackedSensitive(tracked);
+            setRemoteInput(gitState.remoteUrl ?? "");
+          } catch (cause) {
+            if (activeProjectDirectory.current === path) handleGitError(cause);
+          }
+        };
+        if (keepBusy) await loadGitState();
+        else void loadGitState();
+      }
     } catch (cause) {
-      handleGitError(cause);
+      const message = String(cause);
+      if (message.includes("GIT_OPERATION_CANCELLED")) {
+        setNotice(lang === "fr" ? "Analyse du dossier annulée." : lang === "es" ? "Análisis de carpeta cancelado." : "Folder analysis cancelled.");
+        if (keepBusy) throw cause;
+      } else if (keepBusy) {
+        throw cause;
+      } else {
+        handleGitError(cause);
+      }
     } finally {
+      if (projectScanOperationId.current === operationId) projectScanOperationId.current = null;
       selectionEnCours.current = false;
       if (!keepBusy) setBusy(false);
+      if (!keepBusy) setProgression(null);
     }
-  }, [busy, handleGitError]);
+  }, [busy, handleGitError, lang]);
 
   const chargerPlusDeFichiersProjet = useCallback(async () => {
     const requestedDirectory = directory;
@@ -547,21 +555,27 @@ export default function App() {
   async function publishChanges() {
     const token = auth.token?.trim();
     if (!directory || !token) return;
+    const startedAt = performance.now();
+    let operationStep = "verify_github_session";
     let localCommitPendingSync = false;
     let commitPreparation: CommitPreparation = { excludedLargeFiles: [], warningLargeFiles: [], excludedSensitiveFiles: [], excludedGeneratedFolders: [] };
     setBusy(true);
     setError(null);
+    setOperationDiagnostic(null);
+    setRetryAction(null);
     setNotice(null);
     updateProgress({ label: t.operationProgress.publishing, complete: false });
     try {
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       await verifierSessionGitHub();
+      operationStep = "verify_remote";
       if (!repoState?.remoteUrl) {
         throw new Error(t.ui.linkRemoteFirst);
       }
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       if (repoState.changedFiles > 0) {
+        operationStep = "commit_local_changes";
         updateProgress({ label: t.operationProgress.publishing, complete: false });
         commitPreparation = await ajouterEtCommiter(directory, commitMessage.trim() || t.syncStep.commitMsgPlaceholder, {
           name: auth.login ?? "GitHub User",
@@ -569,6 +583,7 @@ export default function App() {
         }, (evt) => suivreProgressionGit(evt, t.operationProgress.publishing));
         localCommitPendingSync = true;
       }
+      operationStep = "synchronize_with_github";
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       await mettreAJour({
         dir: directory,
@@ -576,19 +591,59 @@ export default function App() {
         onProgress: (evt) => suivreProgressionGit(evt, t.operationProgress.publishing),
       });
       localCommitPendingSync = false;
+      operationStep = "verify_remote_publication";
+      await verifierPublicationDistante(token, repoState.remoteUrl, repoState.branch);
       updateProgress({ label: t.operationProgress.publishing, complete: false });
+      operationStep = "refresh_local_state";
       await refreshProjectState(true);
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       await afficherFinOperation(t.operationProgress.completed);
+      journalOperationSuccess("publication / synchronisation", "verify_remote_publication", startedAt);
       const exclusions = messageExclusionsAutomatiques(commitPreparation, lang);
       setNotice(exclusions ? `${t.ui.syncCompleted} ${exclusions}` : t.ui.syncCompleted);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      if (localCommitPendingSync && /failed to fetch|network error|cannot contact|dns|timeout|connection reset/i.test(message)) {
-        console.error("[Gsimplifié] Échec réseau pendant la synchronisation", detailsTechniquesErreur(cause, token));
-        triggerUIErrorNotification("Pas de connexion Internet. Les modifications locales sont enregistrées et seront synchronisées dès que le réseau revient.");
-      } else {
-        handleGitError(cause, "publication / mise à jour");
+      const diagnostic = creerDiagnosticOperation(
+        cause,
+        "publication / synchronisation",
+        operationStep,
+        startedAt,
+        token
+      );
+      handleGitError(cause, "publication / synchronisation", startedAt, operationStep);
+      if (localCommitPendingSync && diagnostic.category === "NETWORK_ERROR") {
+        setNotice(lang === "fr"
+          ? "Votre commit est enregistré localement. Rétablissez la connexion puis relancez la synchronisation."
+          : lang === "es"
+            ? "El commit está guardado localmente. Restablece la conexión y vuelve a sincronizar."
+            : "Your commit is saved locally. Restore the connection and retry synchronization.");
+      }
+      if (
+        diagnostic.retryable
+      ) {
+        setRetryAction(() => async () => {
+          setBusy(true);
+          setError(null);
+          setOperationDiagnostic(null);
+          setRetryAction(null);
+          const retryStartedAt = performance.now();
+          try {
+            await mettreAJour({
+              dir: directory,
+              token,
+              onProgress: (evt) => suivreProgressionGit(evt, t.operationProgress.publishing),
+            });
+            if (!repoState?.remoteUrl) throw new Error("Associez un dépôt GitHub avant de synchroniser.");
+            await verifierPublicationDistante(token, repoState.remoteUrl, repoState.branch);
+            await refreshProjectState(true);
+            setOperationDiagnostic(null);
+            setNotice(t.ui.syncCompleted);
+          } catch (retryCause) {
+            handleGitError(retryCause, "nouvelle tentative de synchronisation", retryStartedAt, "synchronize_with_github");
+          } finally {
+            setBusy(false);
+            effacerProgression();
+          }
+        });
       }
     } finally {
       setBusy(false);
@@ -599,6 +654,11 @@ export default function App() {
   async function createAndPublish() {
     const token = auth.token?.trim();
     if (!directory || !token) return;
+    const startedAt = performance.now();
+    let operationStep = "validate_project";
+    let createdRemoteUrl: string | null = null;
+    let createdRemoteHtmlUrl: string | null = null;
+    const targetBranch = repoState?.branch ?? "main";
     let commitPreparation: CommitPreparation = { excludedLargeFiles: [], warningLargeFiles: [], excludedSensitiveFiles: [], excludedGeneratedFolders: [] };
     if (repoState?.remoteUrl) {
       setError(t.ui.remoteAlreadyLinked);
@@ -610,39 +670,88 @@ export default function App() {
     }
     setBusy(true);
     setError(null);
+    setOperationDiagnostic(null);
+    setRetryAction(null);
     updateProgress({ label: t.operationProgress.publishing, complete: false });
     try {
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       await verifierSessionGitHub();
+      operationStep = "initialize_local_git";
       if (!analysis?.hasExistingGit) await initialiserDepot(directory);
+      operationStep = "create_github_repository";
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       const remote = await creerOuRecupererDepot(token, {
         nom: repoName.trim(),
         prive: privateRepo,
       });
+      createdRemoteUrl = remote.clone_url;
+      createdRemoteHtmlUrl = remote.html_url;
+      operationStep = "configure_remote";
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       await associerDepotDistant(directory, remote.clone_url);
+      operationStep = "verify_local_remote";
+      await refreshProjectState(true);
+      operationStep = "commit_local_changes";
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       commitPreparation = await ajouterEtCommiter(directory, commitMessage.trim() || (lang === "fr" ? "Publication initiale" : lang === "es" ? "Publicación inicial" : "Initial commit"), {
         name: auth.login ?? "GitHub User",
         email: `${auth.login ?? "user"}@users.noreply.github.com`,
       }, (evt) => suivreProgressionGit(evt, t.operationProgress.publishing));
+      operationStep = "push_to_github";
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       await publier({
         dir: directory,
         token,
         onProgress: (evt) => suivreProgressionGit(evt, t.operationProgress.publishing),
       });
+      operationStep = "verify_remote_publication";
+      await verifierPublicationDistante(token, remote.clone_url, targetBranch);
       updateProgress({ label: t.operationProgress.publishing, complete: false });
+      operationStep = "refresh_local_state";
       await refreshProjectState(true);
       updateProgress({ label: t.operationProgress.publishing, complete: false });
       await afficherFinOperation(t.operationProgress.completed);
+      journalOperationSuccess("création / publication", "verify_remote_publication", startedAt);
       const exclusions = messageExclusionsAutomatiques(commitPreparation, lang);
       const publicationNotice = t.ui.publishSuccess(remote.html_url);
       setNotice(exclusions ? `${publicationNotice} ${exclusions}` : publicationNotice);
     } catch (cause) {
-      handleGitError(cause, "création / publication");
+      const diagnostic = creerDiagnosticOperation(cause, "création / publication", operationStep, startedAt, token);
+      handleGitError(cause, "création / publication", startedAt, operationStep);
+      if (
+        ["push_to_github", "verify_remote_publication"].includes(operationStep) &&
+        diagnostic.retryable &&
+        createdRemoteUrl
+      ) {
+        const remoteUrlForRetry = createdRemoteUrl;
+        const remoteHtmlUrlForRetry = createdRemoteHtmlUrl;
+        setRetryAction(() => async () => {
+          setBusy(true);
+          setError(null);
+          setOperationDiagnostic(null);
+          setRetryAction(null);
+          const retryStartedAt = performance.now();
+          try {
+            if (operationStep === "push_to_github") {
+              await publier({
+                dir: directory,
+                token,
+                onProgress: (evt) => suivreProgressionGit(evt, t.operationProgress.publishing),
+              });
+            }
+            await verifierPublicationDistante(token, remoteUrlForRetry, targetBranch);
+            await refreshProjectState(true);
+            setOperationDiagnostic(null);
+            setNotice(t.ui.publishSuccess(remoteHtmlUrlForRetry ?? remoteUrlForRetry));
+          } catch (retryCause) {
+            handleGitError(retryCause, "nouvelle tentative de publication", retryStartedAt, operationStep);
+          } finally {
+            setBusy(false);
+            effacerProgression();
+          }
+        });
+      }
     } finally {
       setBusy(false);
       effacerProgression();
@@ -667,14 +776,20 @@ export default function App() {
     }
 
     setBusy(true);
+    const startedAt = performance.now();
+    let operationStep = "verify_github_session";
     setError(null);
+    setOperationDiagnostic(null);
+    setRetryAction(null);
     setNotice(null);
     updateProgress({ label: t.operationProgress.cloning, complete: false });
     try {
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       updateProgress({ label: t.operationProgress.cloning, complete: false });
       const token = await verifierSessionGitHub();
+      operationStep = "prepare_destination";
       const target = await join(cloneParent, cloneName);
+      operationStep = "clone_repository";
       updateProgress({ label: t.operationProgress.cloning, complete: false });
       await recuperer({
         dir: target,
@@ -682,14 +797,24 @@ export default function App() {
         token,
         onProgress: (evt) => suivreProgressionGit(evt, t.operationProgress.cloning),
       });
+      operationStep = "analyze_cloned_project";
       updateProgress({ label: t.operationProgress.cloning, complete: false });
       await selectProject(target, true);
       updateProgress({ label: t.operationProgress.cloning, complete: false });
       setNotice(t.ui.cloneSuccess(target));
       setStep(1);
       await afficherFinOperation(t.operationProgress.completed);
+      journalOperationSuccess("clonage", "analyze_cloned_project", startedAt);
     } catch (cause) {
-      handleGitError(cause);
+      if (String(cause).includes("GIT_OPERATION_CANCELLED")) {
+        setNotice(lang === "fr" ? "Clonage annulé." : lang === "es" ? "Clonación cancelada." : "Clone cancelled.");
+      } else {
+        const diagnostic = creerDiagnosticOperation(cause, "clonage", operationStep, startedAt, auth.token);
+        handleGitError(cause, "clonage", startedAt, operationStep);
+        if (operationStep === "clone_repository" && diagnostic.retryable) {
+          setRetryAction(() => async () => cloneRepository());
+        }
+      }
     } finally {
       setBusy(false);
       effacerProgression();
@@ -698,7 +823,11 @@ export default function App() {
 
   async function cancelGitOperation() {
     try {
-      await annulerOperationsGit();
+      const scanId = projectScanOperationId.current;
+      await Promise.all([
+        annulerOperationsGit(),
+        ...(scanId ? [annulerOperationGit(scanId)] : []),
+      ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -714,15 +843,21 @@ export default function App() {
     }
     setCloneRepositoriesLoading(true);
     setCloneRepositoriesError(null);
+    setError(null);
+    setOperationDiagnostic(null);
+    setRetryAction(null);
+    const startedAt = performance.now();
     try {
       setCloneRepositories(await listerDepots(auth.token));
     } catch (cause) {
-      const message = handleGitError(cause, "chargement des dépôts");
+      const diagnostic = creerDiagnosticOperation(cause, "chargement des dépôts", "list_repositories", startedAt, auth.token);
+      const message = handleGitError(cause, "chargement des dépôts", startedAt, "list_repositories");
       setCloneRepositoriesError(message);
+      if (diagnostic.retryable) setRetryAction(() => async () => chargerDepotsGitHub());
     } finally {
       setCloneRepositoriesLoading(false);
     }
-  }, [auth.token, displayError, handleGitError]);
+  }, [auth.token, handleGitError]);
 
   useEffect(() => {
     if (cloneWizardOpen) void chargerDepotsGitHub();
@@ -881,26 +1016,59 @@ export default function App() {
                     {t.ui.reauthorizeFolder}
                   </button>
                 )}
-                {auth.token && /could not authenticate|connexion à github impossible|no se pudo iniciar sesión/i.test(error) && (
+                {(operationDiagnostic?.category === "AUTHENTICATION_ERROR" || (auth.token && /could not authenticate|connexion à github impossible|no se pudo iniciar sesión/i.test(error))) && (
                   <button type="button" onClick={() => { setError(null); setAccountPickerOpen(true); }} className="mt-1 block underline underline-offset-2 hover:text-white">
                     {t.ui.reconnectAccount}
                   </button>
                 )}
-                {/repository not found|dépôt github introuvable|repositorio de github|permissions|droits de votre compte|droits d’écriture du compte|write access|autorisation sso/i.test(error) && (
+                {["REPOSITORY_NOT_FOUND", "PERMISSION_DENIED"].includes(operationDiagnostic?.category ?? "") && (
                   <div className="mt-1 flex flex-wrap gap-x-4">
                     <button type="button" onClick={() => { setError(null); setAccountPickerOpen(true); }} className="block underline underline-offset-2 hover:text-white">
                       {lang === "fr" ? "Choisir ou reconnecter un compte GitHub" : lang === "es" ? "Elegir o volver a conectar una cuenta de GitHub" : "Choose or reconnect a GitHub account"}
                     </button>
                   </div>
                 )}
-                {/repository not found|dépôt github introuvable|repositorio de github/i.test(error) && directory && repoState?.remoteUrl && (
+                {(operationDiagnostic?.category === "REPOSITORY_NOT_FOUND" || /repository not found|dépôt github introuvable|repositorio de github/i.test(error)) && directory && repoState?.remoteUrl && (
                   <button type="button" onClick={() => { setStep(1); setError(null); window.setTimeout(() => document.getElementById("remote-url")?.focus(), 0); }} className="mt-1 block underline underline-offset-2 hover:text-white">
                     {lang === "fr" ? "Vérifier l’adresse du dépôt" : lang === "es" ? "Comprobar la dirección del repositorio" : "Check repository URL"}
                   </button>
                 )}
+                {operationDiagnostic && (
+                  <details className="mt-3 rounded-md border border-red-900/70 bg-black/20 p-2 text-xs text-red-100">
+                    <summary className="cursor-pointer font-medium">
+                      {lang === "fr" ? "Détails du diagnostic" : lang === "es" ? "Detalles del diagnóstico" : "Diagnostic details"}
+                    </summary>
+                    <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
+                      <dt>{lang === "fr" ? "ID" : "ID"}</dt><dd className="break-all font-mono">{operationDiagnostic.id}</dd>
+                      <dt>{lang === "fr" ? "Opération" : lang === "es" ? "Operación" : "Operation"}</dt><dd>{operationDiagnostic.operation}</dd>
+                      <dt>{lang === "fr" ? "Étape" : lang === "es" ? "Etapa" : "Step"}</dt><dd>{operationDiagnostic.step}</dd>
+                      <dt>{lang === "fr" ? "Catégorie" : lang === "es" ? "Categoría" : "Category"}</dt><dd>{operationDiagnostic.category}</dd>
+                      <dt>{lang === "fr" ? "Code" : lang === "es" ? "Código" : "Code"}</dt><dd>{operationDiagnostic.code}</dd>
+                      <dt>{lang === "fr" ? "Durée" : lang === "es" ? "Duración" : "Duration"}</dt><dd>{operationDiagnostic.durationMs} ms</dd>
+                      <dt>{lang === "fr" ? "Date" : lang === "es" ? "Fecha" : "Time"}</dt><dd>{new Date(operationDiagnostic.occurredAt).toLocaleString(lang === "fr" ? "fr-FR" : lang === "es" ? "es-ES" : "en-US")}</dd>
+                      <dt>{lang === "fr" ? "Nouvelle tentative" : lang === "es" ? "Reintento" : "Retry"}</dt>
+                      <dd>{operationDiagnostic.retryable
+                        ? lang === "fr" ? "Possible après vérification de l’état local" : lang === "es" ? "Posible tras comprobar el estado local" : "Possible after checking local state"
+                        : lang === "fr" ? "Non recommandée automatiquement" : lang === "es" ? "No se recomienda automáticamente" : "Not recommended automatically"}</dd>
+                    </dl>
+                    <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-black/30 p-2 font-mono">
+                      {operationDiagnostic.technicalDetails}
+                    </pre>
+                    {retryAction && operationDiagnostic.retryable && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void retryAction()}
+                        className="mt-2 rounded-md border border-red-700 px-3 py-2 font-medium hover:bg-red-900/40 disabled:opacity-50"
+                      >
+                        {lang === "fr" ? "Réessayer cette étape" : lang === "es" ? "Reintentar esta etapa" : "Retry this step"}
+                      </button>
+                    )}
+                  </details>
+                )}
               </div>
             </div>
-            <button type="button" onClick={() => setError(null)} aria-label={t.common.close} className="shrink-0 text-red-200 hover:text-white"><X size={17} /></button>
+            <button type="button" onClick={() => { setError(null); setOperationDiagnostic(null); setRetryAction(null); }} aria-label={t.common.close} className="shrink-0 text-red-200 hover:text-white"><X size={17} /></button>
           </div>
         )}
         {notice && (
@@ -925,7 +1093,9 @@ export default function App() {
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-3">
                     <span className="text-sm text-slate-400">
-                      {analysis.type} · {analysis.fileCount} {t.projectStep.filesCount}
+                      {analysis.type} · {analysisComplete
+                        ? `${analysis.fileCount} ${t.projectStep.filesCount}`
+                        : lang === "fr" ? "Analyse en cours…" : lang === "es" ? "Análisis en curso…" : "Analysis in progress…"}
                     </span>
                     <button
                       type="button"
@@ -938,6 +1108,24 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                {!analysisComplete && !busy && (
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-900/70 bg-amber-950/30 p-3 text-sm text-amber-100">
+                    <span>
+                      {lang === "fr"
+                        ? "L’analyse du dossier n’est pas terminée."
+                        : lang === "es"
+                          ? "El análisis de la carpeta no ha finalizado."
+                          : "Folder analysis did not finish."}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void selectProject(directory)}
+                      className="rounded-md border border-amber-700 px-3 py-2 hover:bg-amber-900/50"
+                    >
+                      {lang === "fr" ? "Relancer l’analyse" : lang === "es" ? "Reintentar análisis" : "Retry analysis"}
+                    </button>
+                  </div>
+                )}
                 <ExplorateurFichiers
                   directory={directory}
                   files={projectFiles}

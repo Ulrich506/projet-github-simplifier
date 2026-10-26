@@ -153,6 +153,7 @@ pub fn run() {
             charger_jeton_github_compte,
             enregistrer_compte_github,
             oublier_compte_github,
+            git_native::git_detect_project,
             git_native::git_scan_project,
             git_native::git_read_file_preview,
             git_native::git_status_project,
