@@ -48,11 +48,7 @@ struct CachedProjectScan {
     scanned_at: Instant,
 }
 
-fn cached_scan_page(
-    cached: CachedProjectScan,
-    offset: usize,
-    page_limit: usize,
-) -> ProjectScan {
+fn cached_scan_page(cached: CachedProjectScan, offset: usize, page_limit: usize) -> ProjectScan {
     let files = cached
         .files
         .iter()
@@ -210,8 +206,9 @@ fn initialize_git_repository(root: &Path) -> Result<(), String> {
         match run_simple(root, &["config", "--local", "--get", key]) {
             Ok(_) => {}
             Err(error) if error.starts_with("GIT_NATIVE_ERROR:1:") => {
-                run_simple(root, &["config", "--local", key, value])
-                    .map_err(|error| format!("GIT_INIT_CONFIG_FAILED: impossible de configurer {key} : {error}"))?;
+                run_simple(root, &["config", "--local", key, value]).map_err(|error| {
+                    format!("GIT_INIT_CONFIG_FAILED: impossible de configurer {key} : {error}")
+                })?;
             }
             Err(error) => {
                 return Err(format!(
@@ -245,15 +242,19 @@ fn clone_repository_into(
                 .to_string(),
         );
     }
-    fs::create_dir(&target)
-        .map_err(|error| format!("CLONE_DESTINATION_ERROR: impossible de créer le dossier cible : {error}"))?;
+    fs::create_dir(&target).map_err(|error| {
+        format!("CLONE_DESTINATION_ERROR: impossible de créer le dossier cible : {error}")
+    })?;
 
     let clone_result = clone(parent, target_name).and_then(|()| {
         git_repository_exists(&target).and_then(|is_repository| {
             if is_repository {
                 Ok(())
             } else {
-                Err("CLONE_VERIFICATION_FAILED: Git a terminé sans créer un dépôt valide.".to_string())
+                Err(
+                    "CLONE_VERIFICATION_FAILED: Git a terminé sans créer un dépôt valide."
+                        .to_string(),
+                )
             }
         })
     });
@@ -424,15 +425,13 @@ fn run_git(
 
     let mut command = command_for(dir, args, token);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                format!("GIT_NOT_INSTALLED: {error}")
-            } else {
-                format!("Impossible de démarrer Git : {error}")
-            }
-        })?;
+    let mut child = command.spawn().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            format!("GIT_NOT_INSTALLED: {error}")
+        } else {
+            format!("Impossible de démarrer Git : {error}")
+        }
+    })?;
     let stdout = child.stdout.take().ok_or("Sortie Git indisponible.")?;
     let stderr = child.stderr.take().ok_or("Sortie Git indisponible.")?;
     let (sender, receiver) = std::sync::mpsc::sync_channel::<(bool, Vec<u8>)>(8);
@@ -540,8 +539,8 @@ fn run_git(
     if cancel.load(Ordering::Relaxed) {
         return Err("GIT_OPERATION_CANCELLED".to_string());
     }
-    let status = exit_status
-        .ok_or_else(|| "Le processus Git s’est arrêté sans résultat.".to_string())?;
+    let status =
+        exit_status.ok_or_else(|| "Le processus Git s’est arrêté sans résultat.".to_string())?;
     if !status.success() {
         let detail = String::from_utf8_lossy(&result.stderr);
         return Err(git_failure_message(
@@ -571,8 +570,14 @@ fn run_simple(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
                 format!("Impossible de démarrer Git : {error}")
             }
         })?;
-    let stdout = child.stdout.take().ok_or("Sortie standard Git indisponible.")?;
-    let stderr = child.stderr.take().ok_or("Sortie d’erreur Git indisponible.")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Sortie standard Git indisponible.")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Sortie d’erreur Git indisponible.")?;
     let stdout_capture = Arc::new(Mutex::new(Vec::new()));
     let stderr_capture = Arc::new(Mutex::new(Vec::new()));
     let stdout_thread = capture_process_output(stdout, stdout_capture.clone());
@@ -636,9 +641,9 @@ fn capture_process_output<R: Read + Send + 'static>(
             if read == 0 {
                 return Ok(());
             }
-            let mut output = captured.lock().map_err(|_| {
-                std::io::Error::other("Le tampon de sortie Git est indisponible.")
-            })?;
+            let mut output = captured
+                .lock()
+                .map_err(|_| std::io::Error::other("Le tampon de sortie Git est indisponible."))?;
             let room = MAX_CAPTURE_BYTES.saturating_sub(output.len());
             output.extend_from_slice(&buffer[..read.min(room)]);
         }
@@ -696,9 +701,18 @@ fn sensitive_path(path: &Path) -> bool {
         || [".npmrc", ".pypirc", ".netrc"].contains(&name.as_str())
         || name.contains("secret")
         || name.contains("credential")
-        || [".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".cer", ".crt"]
-            .iter()
-            .any(|extension| name.ends_with(extension))
+        || [
+            ".pem",
+            ".key",
+            ".p12",
+            ".pfx",
+            ".keystore",
+            ".jks",
+            ".cer",
+            ".crt",
+        ]
+        .iter()
+        .any(|extension| name.ends_with(extension))
         || name.starts_with("id_rsa")
         || name.starts_with("id_ed25519")
         || name.starts_with("id_ecdsa")
@@ -784,10 +798,10 @@ fn generated_folder_names(path: &Path, names: &mut HashSet<String>) {
 }
 
 fn append_ignore_rules(dir: &Path, rules: &[String]) -> Result<(), String> {
-    if rules
-        .iter()
-        .any(|rule| rule.chars().any(|character| matches!(character, '\r' | '\n')))
-    {
+    if rules.iter().any(|rule| {
+        rule.chars()
+            .any(|character| matches!(character, '\r' | '\n'))
+    }) {
         return Err("Une règle .gitignore ne peut pas contenir de saut de ligne.".to_string());
     }
     let path = dir.join(".gitignore");
@@ -813,7 +827,10 @@ fn append_ignore_rules(dir: &Path, rules: &[String]) -> Result<(), String> {
         Err(error) => return Err(format!("Impossible de lire .gitignore : {error}")),
     };
     let mut known: HashSet<String> = existing.lines().map(str::to_string).collect();
-    let additions: Vec<&String> = rules.iter().filter(|rule| known.insert((*rule).clone())).collect();
+    let additions: Vec<&String> = rules
+        .iter()
+        .filter(|rule| known.insert((*rule).clone()))
+        .collect();
     if additions.is_empty() {
         return Ok(());
     }
@@ -830,8 +847,13 @@ fn append_ignore_rules(dir: &Path, rules: &[String]) -> Result<(), String> {
 }
 
 fn ignore_rule_for_path(filepath: &str) -> Result<String, String> {
-    if filepath.chars().any(|character| matches!(character, '\r' | '\n')) {
-        return Err("Le nom du fichier contient un saut de ligne et ne peut pas être ignoré.".to_string());
+    if filepath
+        .chars()
+        .any(|character| matches!(character, '\r' | '\n'))
+    {
+        return Err(
+            "Le nom du fichier contient un saut de ligne et ne peut pas être ignoré.".to_string(),
+        );
     }
     let characters: Vec<char> = filepath.chars().collect();
     let mut rule = String::from("/");
@@ -847,7 +869,12 @@ fn ignore_rule_for_path(filepath: &str) -> Result<String, String> {
 }
 
 fn git_add_args(excluded_paths: &[String]) -> Vec<String> {
-    let mut args = vec!["add".to_string(), "-A".to_string(), "--".to_string(), ".".to_string()];
+    let mut args = vec![
+        "add".to_string(),
+        "-A".to_string(),
+        "--".to_string(),
+        ".".to_string(),
+    ];
     args.extend(
         excluded_paths
             .iter()
@@ -909,9 +936,15 @@ fn git_add_exclusions(root: &Path, protected_paths: &[String]) -> Result<Vec<Str
 
 fn detect_project_type(root_files: &HashSet<String>) -> (String, String) {
     if root_files.contains("package.json") {
-        ("node".to_string(), "node_modules/\ndist/\n.env\n*.log".to_string())
+        (
+            "node".to_string(),
+            "node_modules/\ndist/\n.env\n*.log".to_string(),
+        )
     } else if root_files.contains("requirements.txt") || root_files.contains("pyproject.toml") {
-        ("python".to_string(), "__pycache__/\n*.pyc\n.venv/\n.env".to_string())
+        (
+            "python".to_string(),
+            "__pycache__/\n*.pyc\n.venv/\n.env".to_string(),
+        )
     } else if root_files.contains("pom.xml") {
         ("java-maven".to_string(), "target/\n*.class".to_string())
     } else if root_files.contains("build.gradle") || root_files.contains("build.gradle.kts") {
@@ -940,121 +973,140 @@ pub async fn git_scan_project(
     operation_id: String,
 ) -> Result<ProjectScan, String> {
     let cache = operations.project_scan_cache.clone();
-    run_with_operation_async(app, operations.cancellations.clone(), operation_id, move |app, id, cancel| {
-        let root = validate_dir(&dir)?;
-        let page_limit = limit.clamp(1, PAGE_SIZE_MAX);
-        emit_progress(&app, &id, "scan-project", Some(0), None);
-        if offset > 0 {
-            let cached = cache
-                .lock()
-                .map_err(|_| "Impossible de consulter le cache d’analyse.".to_string())?
-                .clone();
-            if let Some(cached) = cached.filter(|cached| {
-                cached.root == root && cached.scanned_at.elapsed() < Duration::from_secs(30)
-            }) {
-                return Ok(cached_scan_page(cached, offset, page_limit));
+    run_with_operation_async(
+        app,
+        operations.cancellations.clone(),
+        operation_id,
+        move |app, id, cancel| {
+            let root = validate_dir(&dir)?;
+            let page_limit = limit.clamp(1, PAGE_SIZE_MAX);
+            emit_progress(&app, &id, "scan-project", Some(0), None);
+            if offset > 0 {
+                let cached = cache
+                    .lock()
+                    .map_err(|_| "Impossible de consulter le cache d’analyse.".to_string())?
+                    .clone();
+                if let Some(cached) = cached.filter(|cached| {
+                    cached.root == root && cached.scanned_at.elapsed() < Duration::from_secs(30)
+                }) {
+                    return Ok(cached_scan_page(cached, offset, page_limit));
+                }
             }
-        }
-        let root_entries = fs::read_dir(&root)
-            .map_err(|error| format!("Impossible de parcourir le dossier du projet : {error}"))?;
-        let mut stack = vec![DirectoryFrame {
-            relative: PathBuf::new(),
-            entries: root_entries,
-        }];
-        let mut cached_files = Vec::with_capacity(MAX_CACHED_PROJECT_PATHS);
-        let mut sensitive_files = Vec::new();
-        let mut root_files = HashSet::new();
-        let mut file_count = 0u64;
-        let scan_started = Instant::now();
-        let has_existing_git = git_repository_exists(&root)?;
+            let root_entries = fs::read_dir(&root).map_err(|error| {
+                format!("Impossible de parcourir le dossier du projet : {error}")
+            })?;
+            let mut stack = vec![DirectoryFrame {
+                relative: PathBuf::new(),
+                entries: root_entries,
+            }];
+            let mut cached_files = Vec::with_capacity(MAX_CACHED_PROJECT_PATHS);
+            let mut sensitive_files = Vec::new();
+            let mut root_files = HashSet::new();
+            let mut file_count = 0u64;
+            let scan_started = Instant::now();
+            let has_existing_git = git_repository_exists(&root)?;
 
-        while let Some(frame) = stack.last_mut() {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("GIT_OPERATION_CANCELLED".to_string());
-            }
-            if scan_started.elapsed() > PROCESS_TIMEOUT {
-                return Err("GIT_OPERATION_TIMEOUT".to_string());
-            }
-            let entry = match frame.entries.next() {
-                Some(entry) => entry.map_err(|error| format!("Impossible de lire une entrée du projet : {error}"))?,
-                None => {
-                    stack.pop();
+            while let Some(frame) = stack.last_mut() {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("GIT_OPERATION_CANCELLED".to_string());
+                }
+                if scan_started.elapsed() > PROCESS_TIMEOUT {
+                    return Err("GIT_OPERATION_TIMEOUT".to_string());
+                }
+                let entry = match frame.entries.next() {
+                    Some(entry) => entry.map_err(|error| {
+                        format!("Impossible de lire une entrée du projet : {error}")
+                    })?,
+                    None => {
+                        stack.pop();
+                        continue;
+                    }
+                };
+                let file_type = entry.file_type().map_err(|error| {
+                    format!("Impossible de lire les métadonnées du projet : {error}")
+                })?;
+                let name = entry.file_name();
+                let name_string = name.to_string_lossy().to_string();
+                let relative = frame.relative.join(&name);
+                if file_type.is_symlink() {
                     continue;
                 }
+                if file_type.is_dir() {
+                    if generated_directory(&name_string) {
+                        continue;
+                    }
+                    let child_path = entry.path();
+                    let entries = fs::read_dir(&child_path).map_err(|error| {
+                        format!("Impossible de parcourir un sous-dossier : {error}")
+                    })?;
+                    stack.push(DirectoryFrame { relative, entries });
+                    continue;
+                }
+                if !file_type.is_file() {
+                    continue;
+                }
+                file_count += 1;
+                if relative
+                    .parent()
+                    .is_some_and(|parent| parent.as_os_str().is_empty())
+                    && matches!(
+                        name_string.as_str(),
+                        "package.json"
+                            | "requirements.txt"
+                            | "pyproject.toml"
+                            | "pom.xml"
+                            | "build.gradle"
+                            | "build.gradle.kts"
+                            | "Cargo.toml"
+                            | "index.html"
+                    )
+                {
+                    root_files.insert(name_string);
+                }
+                let relative_string = relative.to_string_lossy().replace('\\', "/");
+                if sensitive_path(&relative) && sensitive_files.len() < PAGE_SIZE_MAX {
+                    sensitive_files.push(relative_string.clone());
+                }
+                if cached_files.len() < MAX_CACHED_PROJECT_PATHS {
+                    cached_files.push(relative_string);
+                }
+                if file_count % 256 == 0 {
+                    emit_progress(&app, &id, "scan-project", Some(file_count), None);
+                }
+            }
+            let (project_type, suggested_gitignore) = detect_project_type(&root_files);
+            let project_analysis = ProjectAnalysis {
+                project_type,
+                suggested_gitignore,
+                has_existing_git,
+                sensitive_files,
+                file_count,
             };
-            let file_type = entry.file_type().map_err(|error| format!("Impossible de lire les métadonnées du projet : {error}"))?;
-            let name = entry.file_name();
-            let name_string = name.to_string_lossy().to_string();
-            let relative = frame.relative.join(&name);
-            if file_type.is_symlink() {
-                continue;
-            }
-            if file_type.is_dir() {
-                if generated_directory(&name_string) {
-                    continue;
-                }
-                let child_path = entry.path();
-                let entries = fs::read_dir(&child_path)
-                    .map_err(|error| format!("Impossible de parcourir un sous-dossier : {error}"))?;
-                stack.push(DirectoryFrame { relative, entries });
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-            file_count += 1;
-            if relative.parent().is_some_and(|parent| parent.as_os_str().is_empty())
-                && matches!(
-                    name_string.as_str(),
-                    "package.json"
-                        | "requirements.txt"
-                        | "pyproject.toml"
-                        | "pom.xml"
-                        | "build.gradle"
-                        | "build.gradle.kts"
-                        | "Cargo.toml"
-                        | "index.html"
-                )
-            {
-                root_files.insert(name_string);
-            }
-            let relative_string = relative.to_string_lossy().replace('\\', "/");
-            if sensitive_path(&relative) && sensitive_files.len() < PAGE_SIZE_MAX {
-                sensitive_files.push(relative_string.clone());
-            }
-            if cached_files.len() < MAX_CACHED_PROJECT_PATHS {
-                cached_files.push(relative_string);
-            }
-            if file_count % 256 == 0 {
-                emit_progress(&app, &id, "scan-project", Some(file_count), None);
-            }
-        }
-        let (project_type, suggested_gitignore) = detect_project_type(&root_files);
-        let project_analysis = ProjectAnalysis {
-            project_type,
-            suggested_gitignore,
-            has_existing_git,
-            sensitive_files,
-            file_count,
-        };
-        eprintln!(
-            "project-scan files={} elapsed_ms={}",
-            file_count,
-            scan_started.elapsed().as_millis()
-        );
-        let cached = CachedProjectScan {
-            root,
-            analysis: project_analysis,
-            files: cached_files,
-            scanned_at: Instant::now(),
-        };
-        *cache
-            .lock()
-            .map_err(|_| "Impossible de mettre à jour le cache d’analyse.".to_string())? =
-            Some(cached.clone());
-        emit_progress(&app, &id, "scan-project", Some(file_count), Some(file_count));
-        Ok(cached_scan_page(cached, offset, page_limit))
-    })
+            eprintln!(
+                "project-scan files={} elapsed_ms={}",
+                file_count,
+                scan_started.elapsed().as_millis()
+            );
+            let cached = CachedProjectScan {
+                root,
+                analysis: project_analysis,
+                files: cached_files,
+                scanned_at: Instant::now(),
+            };
+            *cache
+                .lock()
+                .map_err(|_| "Impossible de mettre à jour le cache d’analyse.".to_string())? =
+                Some(cached.clone());
+            emit_progress(
+                &app,
+                &id,
+                "scan-project",
+                Some(file_count),
+                Some(file_count),
+            );
+            Ok(cached_scan_page(cached, offset, page_limit))
+        },
+    )
     .await
 }
 
@@ -1079,7 +1131,10 @@ pub async fn git_detect_project(dir: String) -> Result<ProjectAnalysis, String> 
             }
         }
         let (project_type, suggested_gitignore) = detect_project_type(&root_files);
-        eprintln!("project-detect elapsed_ms={}", started.elapsed().as_millis());
+        eprintln!(
+            "project-detect elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
         let has_existing_git = git_repository_exists(&root)?;
         Ok(ProjectAnalysis {
             project_type,
@@ -1161,17 +1216,21 @@ fn stream_nul_output(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("GIT_TERMINAL_PROMPT", "0");
-    let mut child = command
-        .spawn()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                format!("GIT_NOT_INSTALLED: {error}")
-            } else {
-                format!("Impossible de démarrer Git : {error}")
-            }
-        })?;
-    let stdout = child.stdout.take().ok_or("Sortie de statut Git indisponible.")?;
-    let stderr = child.stderr.take().ok_or("Sortie d’erreur Git indisponible.")?;
+    let mut child = command.spawn().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            format!("GIT_NOT_INSTALLED: {error}")
+        } else {
+            format!("Impossible de démarrer Git : {error}")
+        }
+    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Sortie de statut Git indisponible.")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Sortie d’erreur Git indisponible.")?;
     let (sender, receiver) = std::sync::mpsc::sync_channel::<Result<Vec<u8>, String>>(16);
     let stdout_sender = sender.clone();
     let stdout_thread = thread::spawn(move || {
@@ -1185,7 +1244,8 @@ fn stream_nul_output(
                         record.pop();
                     }
                     if record.len() > MAX_GIT_PATH_BYTES {
-                        let _ = stdout_sender.send(Err("Un chemin Git dépasse la limite autorisée.".to_string()));
+                        let _ = stdout_sender
+                            .send(Err("Un chemin Git dépasse la limite autorisée.".to_string()));
                         break;
                     }
                     if stdout_sender.send(Ok(record)).is_err() {
@@ -1193,7 +1253,8 @@ fn stream_nul_output(
                     }
                 }
                 Err(error) => {
-                    let _ = stdout_sender.send(Err(format!("Impossible de lire le statut Git : {error}")));
+                    let _ = stdout_sender
+                        .send(Err(format!("Impossible de lire le statut Git : {error}")));
                     break;
                 }
             }
@@ -1281,7 +1342,11 @@ fn stream_nul_output(
 }
 
 #[tauri::command]
-pub async fn git_status_project(dir: String, offset: usize, limit: usize) -> Result<GitStatusPage, String> {
+pub async fn git_status_project(
+    dir: String,
+    offset: usize,
+    limit: usize,
+) -> Result<GitStatusPage, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = validate_dir(&dir)?;
         let page_limit = limit.clamp(1, PAGE_SIZE_MAX);
@@ -1289,21 +1354,27 @@ pub async fn git_status_project(dir: String, offset: usize, limit: usize) -> Res
             .trim()
             .to_string();
         let remote_url = configured_github_remote(&root)?;
-        let log_output = match run_simple(&root, &["log", "-n", "100", "--format=%h%x00%.200s%x00%ct"]) {
-            Ok(output) => output,
-            Err(error)
-                if error.contains("does not have any commits yet")
-                    || error.contains("unknown revision or path not in the working tree") =>
-            {
-                Vec::new()
-            }
-            Err(error) => return Err(error),
-        };
+        let log_output =
+            match run_simple(&root, &["log", "-n", "100", "--format=%h%x00%.200s%x00%ct"]) {
+                Ok(output) => output,
+                Err(error)
+                    if error.contains("does not have any commits yet")
+                        || error.contains("unknown revision or path not in the working tree") =>
+                {
+                    Vec::new()
+                }
+                Err(error) => return Err(error),
+            };
         let log_fields: Vec<&[u8]> = log_output.split(|byte| *byte == 0).collect();
         let mut recent_commits = Vec::new();
         for fields in log_fields.chunks(3) {
-            if fields.len() < 3 { continue; }
-            let timestamp = String::from_utf8_lossy(fields[2]).trim().parse().unwrap_or(0);
+            if fields.len() < 3 {
+                continue;
+            }
+            let timestamp = String::from_utf8_lossy(fields[2])
+                .trim()
+                .parse()
+                .unwrap_or(0);
             recent_commits.push(RecentCommit {
                 oid: String::from_utf8_lossy(fields[0]).to_string(),
                 message: String::from_utf8_lossy(fields[1]).trim().to_string(),
@@ -1315,29 +1386,40 @@ pub async fn git_status_project(dir: String, offset: usize, limit: usize) -> Res
         let mut conflict_files = Vec::new();
         let mut changed_files = 0u64;
         let mut renamed_source = false;
-        stream_nul_output(&root, &["status", "--porcelain=v1", "-z", "--untracked-files=normal"], None, |record| {
-            if renamed_source {
-                renamed_source = false;
-                return Ok(());
-            }
-            let Some(item) = parse_status_record(record) else { return Ok(()) };
-            if item.status.contains('U') || item.status == "AA" || item.status == "DD" {
-                if conflict_files.len() < PAGE_SIZE_MAX {
-                    conflict_files.push(item.path.clone());
+        stream_nul_output(
+            &root,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=normal"],
+            None,
+            |record| {
+                if renamed_source {
+                    renamed_source = false;
+                    return Ok(());
                 }
-            }
-            changed_files += 1;
-            let is_rename = item.status.contains('R') || item.status.contains('C');
-            if changed_files > offset as u64 && files.len() < page_limit {
-                files.push(item);
-            }
-            if is_rename {
-                renamed_source = true;
-            }
-            Ok(())
-        })?;
+                let Some(item) = parse_status_record(record) else {
+                    return Ok(());
+                };
+                if item.status.contains('U') || item.status == "AA" || item.status == "DD" {
+                    if conflict_files.len() < PAGE_SIZE_MAX {
+                        conflict_files.push(item.path.clone());
+                    }
+                }
+                changed_files += 1;
+                let is_rename = item.status.contains('R') || item.status.contains('C');
+                if changed_files > offset as u64 && files.len() < page_limit {
+                    files.push(item);
+                }
+                if is_rename {
+                    renamed_source = true;
+                }
+                Ok(())
+            },
+        )?;
         Ok(GitStatusPage {
-            branch: if branch.is_empty() { "main".to_string() } else { branch },
+            branch: if branch.is_empty() {
+                "main".to_string()
+            } else {
+                branch
+            },
             remote_url,
             changed_files,
             conflict_files,
@@ -1368,7 +1450,9 @@ pub async fn git_set_remote(dir: String, url: String, replace: bool) -> Result<(
         let validated_url = validate_github_remote(&url)?;
         let existing = configured_github_remote(&root)?;
         if existing.is_some() {
-            if !replace { return Err("Un dépôt distant est déjà associé.".to_string()); }
+            if !replace {
+                return Err("Un dépôt distant est déjà associé.".to_string());
+            }
             run_simple(&root, &["remote", "set-url", "origin", &validated_url])?;
         } else {
             run_simple(&root, &["remote", "add", "origin", &validated_url])?;
@@ -1384,12 +1468,22 @@ pub async fn git_set_ignore(dir: String, filepath: String) -> Result<(), String>
     tauri::async_runtime::spawn_blocking(move || {
         let root = validate_dir(&dir)?;
         let relative = Path::new(&filepath);
-        if relative.is_absolute() || relative.components().any(|component| matches!(component, std::path::Component::ParentDir | std::path::Component::RootDir)) {
+        if relative.is_absolute()
+            || relative.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::RootDir
+                )
+            })
+        {
             return Err("Chemin de fichier invalide.".to_string());
         }
         let rule = ignore_rule_for_path(&filepath)?;
         append_ignore_rules(&root, &[rule])?;
-        run_simple(&root, &["rm", "--cached", "--ignore-unmatch", "--", &filepath])?;
+        run_simple(
+            &root,
+            &["rm", "--cached", "--ignore-unmatch", "--", &filepath],
+        )?;
         Ok(())
     })
     .await
@@ -1467,7 +1561,12 @@ fn reject_tracked_protected_content(protection: &CommitPreparation) -> Result<()
     ))
 }
 
-fn scan_changed_file_sizes(root: &Path, app: &AppHandle, operation_id: &str, cancel: &AtomicBool) -> Result<CommitPreparation, String> {
+fn scan_changed_file_sizes(
+    root: &Path,
+    app: &AppHandle,
+    operation_id: &str,
+    cancel: &AtomicBool,
+) -> Result<CommitPreparation, String> {
     let mut excluded_large_files = Vec::new();
     let mut warning_large_files = Vec::new();
     let mut excluded_sensitive_files = Vec::new();
@@ -1479,61 +1578,70 @@ fn scan_changed_file_sizes(root: &Path, app: &AppHandle, operation_id: &str, can
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         Some(cancel),
         |record| {
-        require_utf8_git_path(record)?;
-        if renamed_source {
-            renamed_source = false;
-            return Ok(());
-        }
-        let Some(item) = parse_status_record(record) else { return Ok(()) };
-        total += 1;
-        let relative = Path::new(&item.path);
-        if sensitive_path(relative) {
-            if excluded_sensitive_files.len() == PAGE_SIZE_MAX {
-                return Err("GIT_TOO_MANY_SENSITIVE_FILES".to_string());
+            require_utf8_git_path(record)?;
+            if renamed_source {
+                renamed_source = false;
+                return Ok(());
             }
-            if excluded_sensitive_files.len() < PAGE_SIZE_MAX {
-                excluded_sensitive_files.push(item.path.clone());
+            let Some(item) = parse_status_record(record) else {
+                return Ok(());
+            };
+            total += 1;
+            let relative = Path::new(&item.path);
+            if sensitive_path(relative) {
+                if excluded_sensitive_files.len() == PAGE_SIZE_MAX {
+                    return Err("GIT_TOO_MANY_SENSITIVE_FILES".to_string());
+                }
+                if excluded_sensitive_files.len() < PAGE_SIZE_MAX {
+                    excluded_sensitive_files.push(item.path.clone());
+                }
             }
-        }
-        if relative.components().any(|component| {
-            let name = component.as_os_str().to_string_lossy();
-            generated_directory(&name)
-        }) {
-            if excluded_generated_folders.len() < PAGE_SIZE_MAX {
-                for component in relative.components() {
-                    let name = component.as_os_str().to_string_lossy().to_string();
-                    if generated_directory(&name) {
-                        excluded_generated_folders.insert(name);
+            if relative.components().any(|component| {
+                let name = component.as_os_str().to_string_lossy();
+                generated_directory(&name)
+            }) {
+                if excluded_generated_folders.len() < PAGE_SIZE_MAX {
+                    for component in relative.components() {
+                        let name = component.as_os_str().to_string_lossy().to_string();
+                        if generated_directory(&name) {
+                            excluded_generated_folders.insert(name);
+                        }
                     }
                 }
             }
-        }
-        let path = root.join(&item.path);
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_file() => metadata,
-            _ => {
-                renamed_source = item.status.contains('R') || item.status.contains('C');
-                return Ok(());
+            let path = root.join(&item.path);
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() => metadata,
+                _ => {
+                    renamed_source = item.status.contains('R') || item.status.contains('C');
+                    return Ok(());
+                }
+            };
+            let size = metadata.len();
+            if size >= LARGE_FILE_BLOCK {
+                if excluded_large_files.len() == PAGE_SIZE_MAX {
+                    return Err("GIT_TOO_MANY_LARGE_FILES".to_string());
+                }
+                if excluded_large_files.len() < PAGE_SIZE_MAX {
+                    excluded_large_files.push(item.path.clone());
+                }
+            } else if size >= LARGE_FILE_WARNING && warning_large_files.len() < PAGE_SIZE_MAX {
+                warning_large_files.push(item.path);
             }
-        };
-        let size = metadata.len();
-        if size >= LARGE_FILE_BLOCK {
-            if excluded_large_files.len() == PAGE_SIZE_MAX {
-                return Err("GIT_TOO_MANY_LARGE_FILES".to_string());
+            if total % 128 == 0 {
+                emit_progress(app, operation_id, "large-file-scan", Some(total), None);
             }
-            if excluded_large_files.len() < PAGE_SIZE_MAX {
-                excluded_large_files.push(item.path.clone());
-            }
-        } else if size >= LARGE_FILE_WARNING && warning_large_files.len() < PAGE_SIZE_MAX {
-            warning_large_files.push(item.path);
-        }
-        if total % 128 == 0 {
-            emit_progress(app, operation_id, "large-file-scan", Some(total), None);
-        }
-        renamed_source = item.status.contains('R') || item.status.contains('C');
-        Ok(())
-    })?;
-    emit_progress(app, operation_id, "large-file-scan", Some(total), Some(total));
+            renamed_source = item.status.contains('R') || item.status.contains('C');
+            Ok(())
+        },
+    )?;
+    emit_progress(
+        app,
+        operation_id,
+        "large-file-scan",
+        Some(total),
+        Some(total),
+    );
     Ok(CommitPreparation {
         excluded_large_files,
         warning_large_files,
@@ -1574,16 +1682,33 @@ pub async fn git_commit_project(
         emit_progress(&app, &id, "stage", Some(0), None);
         let args = git_add_args(&staging_exclusions);
         run_git(&app, &id, &root, &args, None, &cancel, PROCESS_TIMEOUT)?;
-        if cancel.load(Ordering::Relaxed) { return Err("GIT_OPERATION_CANCELLED".to_string()); }
+        if cancel.load(Ordering::Relaxed) {
+            return Err("GIT_OPERATION_CANCELLED".to_string());
+        }
         run_simple(&root, &["config", "user.name", &name])?;
         run_simple(&root, &["config", "user.email", &email])?;
         emit_progress(&app, &id, "commit", Some(0), Some(1));
         let commit_message = message.trim();
-        if commit_message.is_empty() { return Err("Le message du commit ne peut pas être vide.".to_string()); }
-        run_git(&app, &id, &root, &["commit".to_string(), "-m".to_string(), commit_message.to_string()], None, &cancel, PROCESS_TIMEOUT)?;
+        if commit_message.is_empty() {
+            return Err("Le message du commit ne peut pas être vide.".to_string());
+        }
+        run_git(
+            &app,
+            &id,
+            &root,
+            &[
+                "commit".to_string(),
+                "-m".to_string(),
+                commit_message.to_string(),
+            ],
+            None,
+            &cancel,
+            PROCESS_TIMEOUT,
+        )?;
         emit_progress(&app, &id, "commit", Some(1), Some(1));
         Ok(preparation)
-    }).await
+    })
+    .await
 }
 
 fn push_args(branch: &str) -> Vec<String> {
@@ -1632,11 +1757,28 @@ pub async fn git_sync_project(
         let root = validate_dir(&dir)?;
         configured_github_remote(&root)?
             .ok_or("Associez un dépôt GitHub avant de synchroniser.".to_string())?;
-        let branch = String::from_utf8_lossy(&run_simple(&root, &["branch", "--show-current"])?).trim().to_string();
-        if branch.is_empty() { return Err("Aucune branche Git n’est active.".to_string()); }
+        let branch = String::from_utf8_lossy(&run_simple(&root, &["branch", "--show-current"])?)
+            .trim()
+            .to_string();
+        if branch.is_empty() {
+            return Err("Aucune branche Git n’est active.".to_string());
+        }
         let remote_ref = format!("refs/heads/{branch}");
-        let ls_remote = vec!["ls-remote".to_string(), "--heads".to_string(), "origin".to_string(), remote_ref.clone()];
-        let refs = run_git(&app, &id, &root, &ls_remote, Some(&token), &cancel, PROCESS_TIMEOUT)?;
+        let ls_remote = vec![
+            "ls-remote".to_string(),
+            "--heads".to_string(),
+            "origin".to_string(),
+            remote_ref.clone(),
+        ];
+        let refs = run_git(
+            &app,
+            &id,
+            &root,
+            &ls_remote,
+            Some(&token),
+            &cancel,
+            PROCESS_TIMEOUT,
+        )?;
         if !refs.stdout.is_empty() {
             let pull_args = vec![
                 "pull".to_string(),
@@ -1644,11 +1786,28 @@ pub async fn git_sync_project(
                 "origin".to_string(),
                 branch.clone(),
             ];
-            run_git(&app, &id, &root, &pull_args, Some(&token), &cancel, PROCESS_TIMEOUT)?;
+            run_git(
+                &app,
+                &id,
+                &root,
+                &pull_args,
+                Some(&token),
+                &cancel,
+                PROCESS_TIMEOUT,
+            )?;
         }
-        run_git(&app, &id, &root, &push_args(&branch), Some(&token), &cancel, PROCESS_TIMEOUT)?;
+        run_git(
+            &app,
+            &id,
+            &root,
+            &push_args(&branch),
+            Some(&token),
+            &cancel,
+            PROCESS_TIMEOUT,
+        )?;
         Ok(())
-    }).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1778,8 +1937,7 @@ mod tests {
             "GitHub Simplifié"
         );
         run_simple(&root, &["add", "--", "README.txt"]).expect("stage project file");
-        run_simple(&root, &["commit", "-m", "initial"])
-            .expect("commit project fixture");
+        run_simple(&root, &["commit", "-m", "initial"]).expect("commit project fixture");
         let head_before = run_simple(&root, &["rev-parse", "HEAD"]).expect("read initial commit");
         run_simple(&root, &["config", "--local", "user.name", "Existing User"])
             .expect("set existing local identity");
@@ -1834,8 +1992,7 @@ mod tests {
         initialize_git_repository(&source.0).expect("initialize local source repository");
         fs::write(source.0.join("README.txt"), "clone fixture").expect("write clone fixture");
         run_simple(&source.0, &["add", "--", "README.txt"]).expect("stage clone fixture");
-        run_simple(&source.0, &["commit", "-m", "clone fixture"])
-            .expect("commit clone fixture");
+        run_simple(&source.0, &["commit", "-m", "clone fixture"]).expect("commit clone fixture");
 
         let destination_parent = TemporaryGitProject::new();
         let parent = destination_parent.0.join("parent avec espaces-é");
@@ -1843,16 +2000,7 @@ mod tests {
         let source_path = source.0.to_str().expect("test source path should be UTF-8");
         let target_name = std::ffi::OsStr::new("projet cloné");
         let target = clone_repository_into(&parent, target_name, |parent, name| {
-            run_simple(
-                parent,
-                &[
-                    "clone",
-                    "--single-branch",
-                    source_path,
-                    name,
-                ],
-            )
-            .map(|_| ())
+            run_simple(parent, &["clone", "--single-branch", source_path, name]).map(|_| ())
         })
         .expect("clone local repository into Unicode destination");
         assert!(git_repository_exists(&target).expect("verify cloned repository"));
@@ -1872,21 +2020,27 @@ mod tests {
         fs::create_dir(&existing).expect("create preexisting destination");
         fs::write(existing.join("keep.txt"), "keep").expect("write existing data");
         let called = std::cell::Cell::new(false);
-        let existing_error = clone_repository_into(&project.0, std::ffi::OsStr::new("existing"), |_, _| {
-            called.set(true);
-            Ok(())
-        })
-        .expect_err("existing destination must be rejected");
+        let existing_error =
+            clone_repository_into(&project.0, std::ffi::OsStr::new("existing"), |_, _| {
+                called.set(true);
+                Ok(())
+            })
+            .expect_err("existing destination must be rejected");
         assert!(existing_error.starts_with("CLONE_DESTINATION_ERROR:"));
-        assert!(!called.get(), "Git must not be called for existing destination");
+        assert!(
+            !called.get(),
+            "Git must not be called for existing destination"
+        );
         assert_eq!(
             fs::read_to_string(existing.join("keep.txt")).expect("read preserved file"),
             "keep"
         );
 
-        let failed = clone_repository_into(&project.0, std::ffi::OsStr::new("failed-clone"), |parent, name| {
-            run_simple(parent, &["clone", "missing-local-source", name]).map(|_| ())
-        })
+        let failed = clone_repository_into(
+            &project.0,
+            std::ffi::OsStr::new("failed-clone"),
+            |parent, name| run_simple(parent, &["clone", "missing-local-source", name]).map(|_| ()),
+        )
         .expect_err("clone failure must be returned");
         assert!(failed.starts_with("GIT_NATIVE_ERROR:"));
         assert!(!project.0.join("failed-clone").exists());
@@ -1896,15 +2050,23 @@ mod tests {
     #[test]
     fn windows_git_cli_path_normalizes_short_extended_paths_but_keeps_long_paths() {
         let short = PathBuf::from(r"\\?\D:\Projets\Mon projet");
-        assert_eq!(git_cli_path(&short), PathBuf::from(r"D:\Projets\Mon projet"));
+        assert_eq!(
+            git_cli_path(&short),
+            PathBuf::from(r"D:\Projets\Mon projet")
+        );
 
         let long = PathBuf::from(format!(r"\\?\D:\{}", "long-path-segment\\".repeat(20)));
-        assert!(git_cli_path(&long).to_string_lossy().starts_with(r"\\?\D:\"));
+        assert!(git_cli_path(&long)
+            .to_string_lossy()
+            .starts_with(r"\\?\D:\"));
     }
 
     #[test]
     fn base64_encodes_github_basic_auth() {
-        assert_eq!(base64_basic("x-access-token:token"), "eC1hY2Nlc3MtdG9rZW46dG9rZW4=");
+        assert_eq!(
+            base64_basic("x-access-token:token"),
+            "eC1hY2Nlc3MtdG9rZW46dG9rZW4="
+        );
     }
 
     #[test]
@@ -1967,14 +2129,26 @@ mod tests {
         let ignored = Command::new("git")
             .arg("-C")
             .arg(&project.0)
-            .args(["check-ignore", "--no-index", "-q", "--", "config/secrets[dev].env"])
+            .args([
+                "check-ignore",
+                "--no-index",
+                "-q",
+                "--",
+                "config/secrets[dev].env",
+            ])
             .status()
             .expect("check literal filename ignore match");
         assert!(ignored.success());
         let not_ignored = Command::new("git")
             .arg("-C")
             .arg(&project.0)
-            .args(["check-ignore", "--no-index", "-q", "--", "config/secretsd.env"])
+            .args([
+                "check-ignore",
+                "--no-index",
+                "-q",
+                "--",
+                "config/secretsd.env",
+            ])
             .status()
             .expect("check nonmatching filename");
         assert_eq!(not_ignored.code(), Some(1));
@@ -2021,7 +2195,8 @@ mod tests {
         fs::write(project.0.join("README.txt"), "safe").expect("write safe file");
 
         let protected = vec![injected_name.to_string(), ".npmrc".to_string()];
-        let excluded = git_add_exclusions(&project.0, &protected).expect("filter already ignored paths");
+        let excluded =
+            git_add_exclusions(&project.0, &protected).expect("filter already ignored paths");
         assert_eq!(excluded, vec![".npmrc"]);
         let output = Command::new("git")
             .arg("-C")
@@ -2029,10 +2204,17 @@ mod tests {
             .args(git_add_args(&excluded))
             .output()
             .expect("stage safe files with Git pathspec exclusions");
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let staged = run_simple(&project.0, &["ls-files", "-z"]).expect("list staged files");
-        let staged_paths: Vec<&[u8]> = staged.split(|byte| *byte == 0).filter(|path| !path.is_empty()).collect();
+        let staged_paths: Vec<&[u8]> = staged
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .collect();
         assert!(staged_paths.contains(&b"README.txt".as_slice()));
         assert!(!staged_paths.contains(&b".env".as_slice()));
         assert!(!staged_paths.contains(&b".npmrc".as_slice()));
@@ -2042,7 +2224,8 @@ mod tests {
     #[test]
     fn secure_staging_rejects_non_utf8_git_paths_instead_of_lossy_matching() {
         assert!(require_utf8_git_path(b"ordinary-file.txt").is_ok());
-        let error = require_utf8_git_path(b"secret-\xff.env").expect_err("non-UTF8 path must fail closed");
+        let error =
+            require_utf8_git_path(b"secret-\xff.env").expect_err("non-UTF8 path must fail closed");
         assert!(error.starts_with("GIT_UNSUPPORTED_PATH_ENCODING:"));
     }
 
@@ -2055,8 +2238,11 @@ mod tests {
         run_simple(&project.0, &["init"]).expect("initialize isolated test repository");
         run_simple(&project.0, &["config", "user.name", "Security Test"])
             .expect("configure isolated test identity");
-        run_simple(&project.0, &["config", "user.email", "security-test@example.invalid"])
-            .expect("configure isolated test email");
+        run_simple(
+            &project.0,
+            &["config", "user.email", "security-test@example.invalid"],
+        )
+        .expect("configure isolated test email");
         fs::write(project.0.join(".env"), "dummy-secret").expect("write dummy sensitive file");
         let add_output = Command::new("git")
             .arg("-C")
@@ -2065,8 +2251,7 @@ mod tests {
             .output()
             .expect("force-stage the fixture to simulate an already tracked file");
         assert!(add_output.status.success());
-        run_simple(&project.0, &["commit", "-m", "fixture"])
-            .expect("commit isolated test fixture");
+        run_simple(&project.0, &["commit", "-m", "fixture"]).expect("commit isolated test fixture");
         fs::write(project.0.join(".env"), "updated-dummy-secret")
             .expect("modify tracked sensitive file");
         let index_before = run_simple(&project.0, &["ls-files", "-s"])
@@ -2088,8 +2273,7 @@ mod tests {
             index_before
         );
         assert_eq!(
-            run_simple(&project.0, &["status", "--porcelain"])
-                .expect("re-read worktree status"),
+            run_simple(&project.0, &["status", "--porcelain"]).expect("re-read worktree status"),
             status_before
         );
         assert!(!project.0.join(".gitignore").exists());
@@ -2113,7 +2297,11 @@ mod tests {
                 sensitive_files: Vec::new(),
                 file_count: 3,
             },
-            files: vec!["a.txt".to_string(), "b.txt".to_string(), "c.txt".to_string()],
+            files: vec![
+                "a.txt".to_string(),
+                "b.txt".to_string(),
+                "c.txt".to_string(),
+            ],
             scanned_at: Instant::now(),
         };
         let page = cached_scan_page(cached, 1, 1);
@@ -2137,7 +2325,11 @@ mod tests {
                 .collect(),
             scanned_at: Instant::now(),
         };
-        let page = cached_scan_page(cached, MAX_CACHED_PROJECT_PATHS - PAGE_SIZE_MAX, PAGE_SIZE_MAX);
+        let page = cached_scan_page(
+            cached,
+            MAX_CACHED_PROJECT_PATHS - PAGE_SIZE_MAX,
+            PAGE_SIZE_MAX,
+        );
         assert_eq!(page.files.len(), PAGE_SIZE_MAX);
         assert!(!page.has_more);
     }

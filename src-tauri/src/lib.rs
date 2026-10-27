@@ -9,7 +9,9 @@ fn account_index() -> Result<Vec<String>, String> {
         Ok(value) => serde_json::from_str(&value)
             .map_err(|error| format!("La liste des comptes enregistrés est invalide : {error}")),
         Err(keyring::Error::NoEntry) => Ok(Vec::new()),
-        Err(error) => Err(format!("Impossible de lire les comptes enregistrés : {error}")),
+        Err(error) => Err(format!(
+            "Impossible de lire les comptes enregistrés : {error}"
+        )),
     }
 }
 
@@ -65,7 +67,10 @@ fn lister_comptes_github() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 fn charger_jeton_github_compte(login: String) -> Result<Option<String>, String> {
-    if !login.chars().all(|character| character.is_ascii_alphanumeric() || character == '-') {
+    if !login
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
         return Err("Identifiant GitHub invalide.".to_string());
     }
     let entry = keyring::Entry::new(KEYRING_SERVICE, &format!("github-account-{login}"))
@@ -79,7 +84,10 @@ fn charger_jeton_github_compte(login: String) -> Result<Option<String>, String> 
 
 #[tauri::command]
 fn enregistrer_compte_github(login: String, token: String) -> Result<(), String> {
-    if !login.chars().all(|character| character.is_ascii_alphanumeric() || character == '-') {
+    if !login
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
         return Err("Identifiant GitHub invalide.".to_string());
     }
     if token.trim().is_empty() {
@@ -92,7 +100,10 @@ fn enregistrer_compte_github(login: String, token: String) -> Result<(), String>
         .map_err(|error| format!("Impossible d’enregistrer ce compte GitHub : {error}"))?;
 
     let mut accounts = account_index()?;
-    if !accounts.iter().any(|account| account.eq_ignore_ascii_case(&login)) {
+    if !accounts
+        .iter()
+        .any(|account| account.eq_ignore_ascii_case(&login))
+    {
         accounts.push(login);
         accounts.sort_by_key(|account| account.to_lowercase());
         save_account_index(&accounts)?;
@@ -107,7 +118,10 @@ fn enregistrer_compte_github(login: String, token: String) -> Result<(), String>
 
 #[tauri::command]
 fn oublier_compte_github(login: String) -> Result<(), String> {
-    if !login.chars().all(|character| character.is_ascii_alphanumeric() || character == '-') {
+    if !login
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
         return Err("Identifiant GitHub invalide.".to_string());
     }
     let entry = keyring::Entry::new(KEYRING_SERVICE, &format!("github-account-{login}"))
@@ -129,7 +143,9 @@ fn oublier_compte_github(login: String) -> Result<(), String> {
         if legacy_entry.get_password().ok().as_deref() == Some(removed_token.as_str()) {
             match legacy_entry.delete_credential() {
                 Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(error) => return Err(format!("Impossible de supprimer l’ancien jeton : {error}")),
+                Err(error) => {
+                    return Err(format!("Impossible de supprimer l’ancien jeton : {error}"))
+                }
             }
         }
     }
