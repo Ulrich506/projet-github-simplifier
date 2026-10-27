@@ -185,7 +185,9 @@ jobs:
           found_asset=false
           while IFS= read -r -d '' asset; do
             found_asset=true
-            gh release upload "$RELEASE_TAG" "$asset" --clobber
+            gh release upload "$RELEASE_TAG" "$asset" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
           done < <(find release-assets -type f -print0)
 
           if [[ "$found_asset" != true ]]; then
