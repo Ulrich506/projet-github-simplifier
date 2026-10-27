@@ -140,3 +140,55 @@ jobs:
           path: src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload macOS disk image
+        if: matrix.platform == 'macos-latest'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: Gsimplifie-${{ inputs.tag || github.ref_name }}-macos-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-workflow-artifacts:
+    name: Attach workflow artifacts to GitHub Release
+    needs: release
+    if: always() && needs.release.result == 'success'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download installer artifacts
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: Gsimplifie-${{ inputs.tag || github.ref_name }}-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload installers to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          if [[ -z "$RELEASE_TAG" ]]; then
+            echo "Impossible de déterminer le tag de la release."
+            exit 1
+          fi
+
+          if [[ ! -d release-assets ]]; then
+            echo "Aucun artifact d’installation n’a été téléchargé."
+            exit 1
+          fi
+
+          found_asset=false
+          while IFS= read -r -d '' asset; do
+            found_asset=true
+            gh release upload "$RELEASE_TAG" "$asset" --clobber
+          done < <(find release-assets -type f -print0)
+
+          if [[ "$found_asset" != true ]]; then
+            echo "Les artifacts téléchargés ne contiennent aucun fichier à publier."
+            exit 1
+          fi
